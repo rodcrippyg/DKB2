@@ -1,0 +1,1415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NFL Market Monitor</title>
+    <style>
+        :root {
+            --bg-base: #06090e;
+            --bg-surface: #0b0f17;
+            --bg-card: #0f1623;
+            --border-color: #1a2538;
+            --accent-green: #00e676;
+            --accent-green-dark: #005928;
+            --accent-blue: #388bfd;
+            --accent-amber: #d29922;
+            --accent-red: #ff5252;
+            --text-primary: #f0f6fc;
+            --text-secondary: #8b949e;
+            --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-base);
+            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-size: 13px;
+            line-height: 1.4;
+            padding-bottom: 80px;
+        }
+
+        /* 1. Thin Continuous Stock Market Ticker */
+        .ticker-wrap {
+            width: 100%;
+            height: 32px;
+            background: #04060a;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            overflow: hidden;
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+        }
+
+        .ticker-badge {
+            background: var(--accent-amber);
+            color: #000;
+            font-weight: 800;
+            font-size: 10px;
+            padding: 0 12px;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            white-space: nowrap;
+            z-index: 10;
+            box-shadow: 3px 0 10px rgba(0,0,0,0.8);
+        }
+
+        .ticker-marquee {
+            display: inline-flex;
+            white-space: nowrap;
+            animation: tickerScroll 40s linear infinite;
+            padding-left: 20px;
+        }
+
+        .ticker-wrap:hover .ticker-marquee {
+            animation-play-state: paused;
+        }
+
+        .ticker-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .t-team { color: var(--accent-blue); font-weight: 800; }
+        .t-target { color: var(--text-primary); }
+        .t-odds { color: #fff; font-weight: 700; }
+        .t-ev { color: var(--accent-green); font-weight: 800; }
+        .ticker-sep { color: #21262d; margin: 0 14px; font-weight: 900; }
+
+        @keyframes tickerScroll {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(-50%); }
+        }
+
+        .container {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 16px 20px;
+        }
+
+        /* 2. Top Header */
+        .header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 16px;
+        }
+
+        .app-title {
+            font-size: 22px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .app-subtitle {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+
+        .btn-reset {
+            background: #161b22;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            font-size: 11px;
+            font-weight: 700;
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        .btn-reset:hover { background: #21262d; color: #fff; }
+
+        /* 3. Strategy Switcher & Season Performance Hub */
+        .strategy-hub {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 14px 18px;
+            margin-bottom: 16px;
+        }
+
+        .strat-head-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #161f30;
+            padding-bottom: 10px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .strat-label {
+            font-size: 11px;
+            font-weight: 800;
+            color: var(--text-secondary);
+            letter-spacing: 0.5px;
+        }
+
+        .strat-toggle-group {
+            display: flex;
+            gap: 8px;
+        }
+
+        .strat-btn {
+            background: #141c2b;
+            border: 1px solid #23314d;
+            color: var(--text-secondary);
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .strat-btn.active {
+            background: #1f6feb;
+            border-color: #388bfd;
+            color: #fff;
+        }
+
+        .perf-ribbon {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 12px;
+        }
+
+        .perf-card {
+            background: rgba(15, 22, 35, 0.6);
+            border: 1px solid #192438;
+            padding: 8px 12px;
+            border-radius: 6px;
+        }
+
+        .perf-card .k {
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+        }
+
+        .perf-card .v {
+            font-size: 16px;
+            font-weight: 800;
+            color: #fff;
+            margin-top: 2px;
+            font-family: var(--font-mono);
+        }
+
+        /* 4. Ledger Bar */
+        .ledger-bar {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 12px 18px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+
+        .ledger-group {
+            display: flex;
+            gap: 24px;
+            align-items: center;
+        }
+
+        .ledger-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .ledger-item .l {
+            font-size: 10px;
+            font-weight: 800;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+        }
+
+        .ledger-item .val {
+            font-size: 16px;
+            font-weight: 800;
+            color: #fff;
+            font-family: var(--font-mono);
+        }
+
+        .ledger-input {
+            background: #080d14;
+            border: 1px solid #23314d;
+            color: #fff;
+            font-family: var(--font-mono);
+            font-size: 14px;
+            font-weight: 800;
+            padding: 4px 8px;
+            border-radius: 4px;
+            width: 100px;
+        }
+
+        .btn-export {
+            background: #238636;
+            border: 1px solid #2ea043;
+            color: #fff;
+            font-weight: 700;
+            font-size: 11px;
+            padding: 6px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        /* 5. Matchup Card */
+        .matchup-card {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .team-pod {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .team-logo {
+            width: 58px;
+            height: 58px;
+            object-fit: contain;
+        }
+
+        .team-name {
+            font-size: 18px;
+            font-weight: 800;
+            color: #fff;
+        }
+
+        .matchup-center {
+            font-size: 14px;
+            font-weight: 900;
+            color: var(--text-secondary);
+            letter-spacing: 2px;
+        }
+
+        .matchup-meta {
+            text-align: right;
+        }
+
+        .meta-div {
+            color: var(--accent-blue);
+            font-weight: 800;
+            font-size: 12px;
+        }
+
+        .meta-score {
+            font-size: 14px;
+            font-weight: 800;
+            color: var(--accent-green);
+            margin-top: 2px;
+        }
+
+        .meta-kickoff {
+            font-size: 11px;
+            color: var(--text-secondary);
+            font-family: var(--font-mono);
+            margin-top: 2px;
+        }
+
+        /* 6. Controls Strip */
+        .controls-strip {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 16px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .pill-group {
+            display: flex;
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        .pill-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            padding: 6px 12px;
+            font-size: 11px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .pill-btn.active {
+            background: #238636;
+            color: #fff;
+        }
+
+        .game-select {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            color: #fff;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 700;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .game-select optgroup {
+            background: #090e17;
+            color: var(--accent-blue);
+            font-weight: 800;
+        }
+
+        .game-select option {
+            background: var(--bg-card);
+            color: #fff;
+        }
+
+        .manual-matchup-form {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: end;
+            gap: 8px;
+            width: 100%;
+            padding: 10px;
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+        }
+
+        .manual-matchup-form label {
+            display: grid;
+            gap: 4px;
+            color: var(--text-secondary);
+            font-size: 10px;
+            font-weight: 700;
+        }
+
+        .manual-matchup-form input,
+        .manual-matchup-form select {
+            min-width: 130px;
+            padding: 7px 9px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            color: #fff;
+            font: inherit;
+        }
+
+        .manual-matchup-form button {
+            padding: 8px 12px;
+            border: 1px solid var(--accent-blue);
+            border-radius: 4px;
+            background: transparent;
+            color: var(--accent-blue);
+            font-size: 11px;
+            font-weight: 800;
+            cursor: pointer;
+        }
+
+        .filter-toggle {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .filter-toggle.active {
+            border-color: var(--accent-green);
+            color: var(--accent-green);
+            background: rgba(0, 230, 118, 0.08);
+        }
+
+        /* 7. Section Header Bars */
+        .section-bar {
+            background: #111a2e;
+            border: 1px solid #1c2b4a;
+            border-radius: 6px;
+            padding: 8px 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: 800;
+            font-size: 12px;
+            color: #79c0ff;
+            margin: 20px 0 10px 0;
+            letter-spacing: 0.5px;
+        }
+
+        .section-badge {
+            background: rgba(56, 139, 253, 0.2);
+            color: #79c0ff;
+            font-size: 10px;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-weight: 800;
+        }
+
+        /* 8. Wager Cards */
+        .wager-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 14px 18px;
+            margin-bottom: 10px;
+            position: relative;
+        }
+
+        .wager-card.is-green {
+            border-left: 3px solid var(--accent-green);
+        }
+
+        .card-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 8px;
+        }
+
+        .tags-row {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .badge {
+            font-size: 9px;
+            font-weight: 800;
+            text-transform: uppercase;
+            padding: 2px 6px;
+            border-radius: 4px;
+            letter-spacing: 0.5px;
+        }
+
+        .badge-green { background: rgba(0, 230, 118, 0.15); color: var(--accent-green); border: 1px solid rgba(0, 230, 118, 0.4); }
+        .badge-blue { background: rgba(56, 139, 253, 0.15); color: var(--accent-blue); }
+        .badge-amber { background: rgba(210, 153, 34, 0.15); color: var(--accent-amber); }
+        .badge-dark { background: #161f30; color: var(--text-secondary); }
+        .badge-win { background: rgba(0, 230, 118, 0.25); color: var(--accent-green); font-weight: 900; }
+        .badge-loss { background: rgba(255, 82, 82, 0.25); color: var(--accent-red); font-weight: 900; }
+
+        .pricing-block {
+            text-align: right;
+            font-family: var(--font-mono);
+        }
+
+        .odds-val {
+            font-size: 16px;
+            font-weight: 800;
+            color: #fff;
+        }
+
+        .odds-val.is-green {
+            color: var(--accent-green);
+        }
+
+        .fair-prob {
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+
+        .wager-title-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+
+        .card-helmet {
+            width: 24px;
+            height: 24px;
+            object-fit: contain;
+        }
+
+        .target-name {
+            font-size: 15px;
+            font-weight: 800;
+            color: #fff;
+        }
+
+        .edge-val {
+            font-size: 12px;
+            font-weight: 800;
+            color: var(--accent-green);
+            font-family: var(--font-mono);
+        }
+
+        .collision-analysis {
+            font-size: 11px;
+            color: #adbac7;
+            margin: 6px 0 12px 0;
+            background: #090e17;
+            padding: 8px 12px;
+            border-radius: 4px;
+            border-left: 2px solid var(--accent-blue);
+        }
+
+        .collision-analysis strong {
+            color: #fff;
+        }
+
+        .card-action-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid #161f30;
+            padding-top: 10px;
+        }
+
+        .stake-ctrl {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .stake-input {
+            background: #080d14;
+            border: 1px solid #23314d;
+            color: #fff;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 700;
+            padding: 4px 8px;
+            border-radius: 4px;
+            width: 70px;
+        }
+
+        .payout-preview {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .payout-preview strong { color: #fff; }
+
+        .btn-bet {
+            background: #238636;
+            border: 1px solid #2ea043;
+            color: #fff;
+            font-size: 11px;
+            font-weight: 800;
+            padding: 6px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        .btn-bet:hover { background: #2ea043; }
+        .btn-bet:disabled {
+            background: #161b22;
+            border-color: #21262d;
+            color: var(--text-secondary);
+            cursor: not-allowed;
+        }
+
+        .btn-win-settle {
+            background: #238636;
+            border: 1px solid #2ea043;
+            color: #fff;
+            padding: 4px 8px;
+            font-size: 10px;
+            font-weight: 800;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .btn-loss-settle {
+            background: #da3633;
+            border: 1px solid #f85149;
+            color: #fff;
+            padding: 4px 8px;
+            font-size: 10px;
+            font-weight: 800;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 1. Ultra-Thin Financial Stock Ticker Ribbon -->
+    <div class="ticker-wrap">
+        <div class="ticker-badge">⚡ MARKET TICKER</div>
+        <div class="ticker-marquee" id="tickerStream">
+            <span class="ticker-item" id="tickerMessage">Loading live schedule and sportsbook markets...</span>
+        </div>
+    </div>
+
+    <div class="container">
+
+        <!-- 2. Header Row -->
+        <div class="header-row">
+            <div>
+                <h1 class="app-title">NFL Market Monitor</h1>
+                <p class="app-subtitle">Live schedule and sportsbook prices • No independent model edge is currently validated</p>
+            </div>
+            <button class="btn-reset" onclick="resetAllFilters()">✕ Reset All Filters</button>
+        </div>
+
+        <!-- 3. Strategy Switcher & Season Performance Hub -->
+        <div class="strategy-hub">
+            <div class="strat-head-row">
+                <span class="strat-label">PORTFOLIO STRATEGY:</span>
+                <div class="strat-toggle-group">
+                    <span class="strat-label">Paper results are stored locally. No model-based stake sizing is provided.</span>
+                </div>
+            </div>
+
+            <div class="perf-ribbon">
+                <div class="perf-card">
+                    <div class="k">Paper Record</div>
+                    <div class="v" id="stat-record">0 – 0</div>
+                </div>
+                <div class="perf-card">
+                    <div class="k">Win Rate</div>
+                    <div class="v" id="stat-winrate" style="color:var(--accent-green);">0.0%</div>
+                </div>
+                <div class="perf-card">
+                    <div class="k">Cumulative PnL</div>
+                    <div class="v" id="stat-pnl">$0.00</div>
+                </div>
+                <div class="perf-card">
+                    <div class="k">Settled ROI</div>
+                    <div class="v" id="stat-roi" style="color:var(--accent-green);">0.0%</div>
+                </div>
+                <div class="perf-card">
+                    <div class="k">Paper Bankroll</div>
+                    <div class="v" id="stat-roll">$1,000.00</div>
+                </div>
+                <div class="perf-card">
+                    <div class="k">Model Status</div>
+                    <div class="v" id="stat-sizing-guide" style="font-size:12px; color:var(--accent-blue);">Paper tracking only</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 4. Ledger Bar -->
+        <div class="ledger-bar">
+            <div class="ledger-group">
+                <div class="ledger-item">
+                    <span class="l">Baseline Paper Bankroll ($)</span>
+                    <input type="number" id="inputStartingBankroll" class="ledger-input" value="1000" readonly>
+                </div>
+                <div class="ledger-item">
+                    <span class="l">Available Bankroll</span>
+                    <span class="val" id="dispAvailableBankroll">$1000.00</span>
+                </div>
+                <div class="ledger-item">
+                    <span class="l">Active Paper Wagers</span>
+                    <span class="val" id="dispActiveWagers">0 Placed</span>
+                </div>
+                <div class="ledger-item">
+                    <span class="l">Active Slate</span>
+                    <span class="val" id="activeSlateLabel" style="color:var(--accent-blue);">Loading...</span>
+                </div>
+            </div>
+            <button class="btn-export" onclick="exportCsv()">↓ Export PnL CSV</button>
+        </div>
+
+        <!-- 5. Matchup Card (Dynamic) -->
+        <div class="matchup-card">
+            <div class="team-pod">
+                <img id="awayHelmet" class="team-logo" src="https://a.espncdn.com/i/teamlogos/nfl/500/nfl.png" alt="Away Team">
+                <div class="team-name" id="awayTeamName">Select a matchup</div>
+            </div>
+            <div class="matchup-center">AT</div>
+            <div class="team-pod">
+                <div class="team-name" id="homeTeamName">Select a matchup</div>
+                <img id="homeHelmet" class="team-logo" src="https://a.espncdn.com/i/teamlogos/nfl/500/nfl.png" alt="Home Team">
+            </div>
+            <div class="matchup-meta">
+                <div class="meta-div" id="matchupDivision">NFL</div>
+                <div class="meta-score" id="matchupStatus">Schedule loading</div>
+                <div class="meta-kickoff" id="matchupVenue"></div>
+            </div>
+        </div>
+
+        <!-- 6. Controls Strip -->
+        <div class="controls-strip">
+            <div class="pill-group">
+                <button class="pill-btn active" id="tab-slate" onclick="setTab('SLATE')">Active Slate</button>
+                <button class="pill-btn" id="tab-ledger" onclick="setTab('LEDGER')">Active Ledger</button>
+            </div>
+
+            <!-- Division Grouped Selector -->
+            <select id="matchupSelect" class="game-select" onchange="onSelectGame()">
+                <!-- Options populated dynamically from SQLite/Schedule -->
+            </select>
+
+            <div class="pill-group">
+                <button class="pill-btn" id="persp-away" onclick="setPerspective('AWAY')">Away Team Only</button>
+                <button class="pill-btn active" id="persp-both" onclick="setPerspective('BOTH')">Both Teams</button>
+                <button class="pill-btn" id="persp-home" onclick="setPerspective('HOME')">Home Team Only</button>
+            </div>
+
+            <button class="filter-toggle" id="btn-green-toggle" disabled>Market baseline only; no validated model picks</button>
+
+            <form class="manual-matchup-form" onsubmit="addManualMatchup(event)">
+                <label>Postseason round
+                    <select id="manualWeek" required>
+                        <option value="19">Wild Card</option>
+                        <option value="20">Divisional</option>
+                        <option value="21">Conference Championship</option>
+                        <option value="22">Super Bowl</option>
+                    </select>
+                </label>
+                <label>Away team
+                    <input id="manualAwayTeam" maxlength="80" required placeholder="Team name">
+                </label>
+                <label>Home team
+                    <input id="manualHomeTeam" maxlength="80" required placeholder="Team name">
+                </label>
+                <button type="submit">Add matchup</button>
+            </form>
+        </div>
+
+        <!-- 7. Dynamic Wagers Feed -->
+        <div id="wagersFeed">
+            <!-- Rendered by renderFeed() -->
+        </div>
+
+    </div>
+
+    <!-- Script: Full Application Engine -->
+    <script>
+        // Official Divisional Schedule Dataset for Week 4 (Oct 1 - Oct 5, 2026)
+        const LEGACY_DEMO_GAMES = [
+            { id: "401760017", division: "AFC North", awayTeam: "Pittsburgh Steelers", awayAbbr: "PIT", homeTeam: "Cleveland Browns", homeAbbr: "CLE", status: "Thu 8:15 PM ET", venue: "Huntington Bank Field" },
+            { id: "401760018", division: "International", awayTeam: "Indianapolis Colts", awayAbbr: "IND", homeTeam: "Washington Commanders", homeAbbr: "WSH", status: "Sun 9:30 AM ET", venue: "London Stadium" },
+            { id: "401760019", division: "AFC East", awayTeam: "New England Patriots", awayAbbr: "NE", homeTeam: "Buffalo Bills", homeAbbr: "BUF", status: "Sun 1:00 PM ET", venue: "Highmark Stadium" },
+            { id: "401760020", division: "Cross-Conference", awayTeam: "Dallas Cowboys", awayAbbr: "DAL", homeTeam: "Houston Texans", homeAbbr: "HOU", status: "Sun 1:00 PM ET", venue: "NRG Stadium" },
+            { id: "401760021", division: "Cross-Conference", awayTeam: "New York Jets", awayAbbr: "NYJ", homeTeam: "Chicago Bears", homeAbbr: "CHI", status: "Sun 1:00 PM ET", venue: "Soldier Field" },
+            { id: "401760022", division: "AFC North", awayTeam: "Jacksonville Jaguars", awayAbbr: "JAX", homeTeam: "Cincinnati Bengals", homeAbbr: "CIN", status: "Sun 1:00 PM ET", venue: "Paycor Stadium" },
+            { id: "401760023", division: "NFC South", awayTeam: "Green Bay Packers", awayAbbr: "GB", homeTeam: "Tampa Bay Buccaneers", homeAbbr: "TB", status: "Sun 1:00 PM ET", venue: "Raymond James Stadium" },
+            { id: "401760024", division: "AFC North", awayTeam: "Tennessee Titans", awayAbbr: "TEN", homeTeam: "Baltimore Ravens", homeAbbr: "BAL", status: "Sun 1:00 PM ET", venue: "M&T Bank Stadium" },
+            { id: "401760025", division: "NFC East", awayTeam: "Arizona Cardinals", awayAbbr: "ARI", homeTeam: "New York Giants", homeAbbr: "NYG", status: "Sun 1:00 PM ET", venue: "MetLife Stadium" },
+            { id: "401760026", division: "NFC East", awayTeam: "Los Angeles Rams", awayAbbr: "LAR", homeTeam: "Philadelphia Eagles", homeAbbr: "PHI", status: "Sun 1:00 PM ET", venue: "Lincoln Financial Field" },
+            { id: "401760027", division: "NFC North", awayTeam: "Miami Dolphins", awayAbbr: "MIA", homeTeam: "Minnesota Vikings", homeAbbr: "MIN", status: "Sun 4:05 PM ET", venue: "U.S. Bank Stadium" },
+            { id: "401760028", division: "AFC West", awayTeam: "Kansas City Chiefs", awayAbbr: "KC", homeTeam: "Las Vegas Raiders", homeAbbr: "LV", status: "Sun 4:25 PM ET", venue: "Allegiant Stadium" },
+            { id: "401760029", division: "Cross-Conference", awayTeam: "Denver Broncos", awayAbbr: "DEN", homeTeam: "San Francisco 49ers", homeAbbr: "SF", status: "Sun 4:25 PM ET", venue: "Levi's Stadium" },
+            { id: "401760030", division: "Cross-Conference", awayTeam: "Los Angeles Chargers", awayAbbr: "LAC", homeTeam: "Seattle Seahawks", homeAbbr: "SEA", status: "Sun 4:25 PM ET", venue: "Lumen Field" },
+            { id: "401760031", division: "SNF", awayTeam: "Detroit Lions", awayAbbr: "DET", homeTeam: "Carolina Panthers", homeAbbr: "CAR", status: "Sun 8:20 PM ET", venue: "Bank of America Stadium" },
+            { id: "401760032", division: "MNF", awayTeam: "Atlanta Falcons", awayAbbr: "ATL", homeTeam: "New Orleans Saints", homeAbbr: "NO", status: "Mon 8:15 PM ET", venue: "Caesars Superdome" }
+        ];
+
+        // Market Intelligence Repository for Week 4 Matchups
+        const LEGACY_DEMO_WAGERS = {
+            "401760017": [ // PIT @ CLE
+                {
+                    id: "w4_pit_cle_1",
+                    side: "AWAY",
+                    target: "Pittsburgh Steelers -2.5",
+                    odds: "-110",
+                    oddsNum: -110,
+                    fairProb: "55.8%",
+                    edge: 4.8,
+                    tier: 2,
+                    badges: ["CONFIRMED VALUE PICK", "COVER EDGE", "Trench Advantage"],
+                    helmet: "pit",
+                    factor: "Steelers defensive line ranks #1 in pass rush win rate against Cleveland's offensive tackles, preventing clean drops over 4 quarters."
+                },
+                {
+                    id: "w4_pit_cle_2",
+                    side: "HOME",
+                    target: "Jameis Winston Under 208.5 Pass Yds",
+                    odds: "-110",
+                    oddsNum: -110,
+                    fairProb: "58.6%",
+                    edge: 6.4,
+                    tier: 1,
+                    badges: ["CONFIRMED VALUE PICK", "COLLISION CHOKE", "Pocket Delta: -0.48s"],
+                    helmet: "cle",
+                    factor: "Winston requires 2.82s release; T.J. Watt and Highsmith arrive in 2.34s. The -0.48s pocket deficit collapses downfield pass concepts."
+                },
+                {
+                    id: "w4_pit_cle_3",
+                    side: "AWAY",
+                    target: "Jaylen Warren Over 3.5 Receptions",
+                    odds: "+105",
+                    oddsNum: 105,
+                    fairProb: "54.2%",
+                    edge: 5.8,
+                    tier: 2,
+                    badges: ["CONFIRMED VALUE PICK", "TARGET FUNNEL", "Blitz Safety Valve"],
+                    helmet: "pit",
+                    factor: "Cleveland aggressive A-gap blitz packages trigger instant hot reads and checkdown targets to Warren on intermediate screens."
+                },
+                {
+                    id: "w4_pit_cle_4",
+                    side: "SHARED",
+                    target: "UNDER 38.5 Total Points",
+                    odds: "-110",
+                    oddsNum: -110,
+                    fairProb: "54.4%",
+                    edge: 4.6,
+                    tier: 2,
+                    badges: ["CONFIRMED VALUE PICK", "DEFENSIVE TRENCH"],
+                    helmet: "nfl",
+                    factor: "Divisional conditions and two dominant defensive fronts limit explosive drive conversion efficiency."
+                }
+            ],
+            "401760019": [ // NE @ BUF
+                {
+                    id: "w4_ne_buf_1",
+                    side: "HOME",
+                    target: "Josh Allen Anytime Touchdown",
+                    odds: "+115",
+                    oddsNum: 115,
+                    fairProb: "53.2%",
+                    edge: 7.4,
+                    tier: 1,
+                    badges: ["CONFIRMED VALUE PICK", "RED-ZONE PRIORITY", "Goal-Line Sneak Share: 64%"],
+                    helmet: "buf",
+                    factor: "Inside the 3-yard line, Josh Allen claims 64% of high-leverage touches and converts at an 82% clip over bookmaker juice."
+                },
+                {
+                    id: "w4_ne_buf_2",
+                    side: "AWAY",
+                    target: "Drake Maye Under 212.5 Pass Yds",
+                    odds: "-110",
+                    oddsNum: -110,
+                    fairProb: "56.8%",
+                    edge: 5.8,
+                    tier: 2,
+                    badges: ["CONFIRMED VALUE PICK", "COLLISION CHOKE", "Pocket Delta: -0.56s"],
+                    helmet: "ne",
+                    factor: "Maye's 2.94s release time cannot survive Buffalo's sub-2.38s edge pressure, suppressing chunk boundary completions."
+                },
+                {
+                    id: "w4_ne_buf_3",
+                    side: "AWAY",
+                    target: "Demario Douglas Over 4.5 Catches",
+                    odds: "+105",
+                    oddsNum: 105,
+                    fairProb: "54.8%",
+                    edge: 5.7,
+                    tier: 2,
+                    badges: ["CONFIRMED VALUE PICK", "TARGET FUNNEL", "Checkdown Target Share: 28%"],
+                    helmet: "ne",
+                    factor: "Underneath bracket coverage on perimeter receivers funnels quick 3-step drop passes straight to Douglas in the slot."
+                }
+            ]
+        };
+
+        let WEEK_4_GAMES = [];
+        let WAGERS_DATABASE = {};
+        let marketLoadMessage = "Live odds have not loaded.";
+
+        // Application State
+        let activeTab = 'SLATE';
+        let activePerspective = 'BOTH';
+        let selectedGameId = "";
+
+        let ledger = {
+            baseBankroll: 1000.0,
+            startingBankroll: 1000.0,
+            availableBankroll: 1000.0,
+            pendingExposure: 0.0,
+            totalStaked: 0.0,
+            netPnl: 0.0,
+            wins: 0,
+            losses: 0,
+            wagers: [] // { id, target, stake, oddsNum, tier, status: 'PENDING'|'WIN'|'LOSS', pnl: 0 }
+        };
+
+        // Initialize Dropdown
+        async function initDropdown() {
+            try {
+                const response = await fetch("/api/schedule");
+                if (!response.ok) throw new Error(`Schedule request failed (${response.status})`);
+                const schedule = await response.json();
+                WEEK_4_GAMES = schedule.map(game => ({
+                    id: String(game.event_id),
+                    week: game.week,
+                    division: game.division || "NFL",
+                    awayTeam: game.away_team,
+                    awayAbbr: game.away_abbr,
+                    homeTeam: game.home_team,
+                    homeAbbr: game.home_abbr,
+                    status: game.status || "Scheduled",
+                    isCurrentWeek: Boolean(game.is_current_week),
+                    venue: game.venue || "Venue unavailable"
+                }));
+                if (WEEK_4_GAMES.length === 0) throw new Error("No games were returned for this week.");
+
+                const activeWeekGame = WEEK_4_GAMES.find(game => game.isCurrentWeek) || WEEK_4_GAMES[0];
+                selectedGameId = activeWeekGame.id;
+                document.getElementById("activeSlateLabel").textContent = `Week ${activeWeekGame.week}`;
+                await loadMarkets();
+            } catch (error) {
+                marketLoadMessage = `Live schedule unavailable: ${error.message}`;
+                document.getElementById("tickerMessage").textContent = marketLoadMessage;
+                document.getElementById("matchupStatus").textContent = "Schedule unavailable";
+                document.getElementById("wagersFeed").textContent = marketLoadMessage;
+                return;
+            }
+
+            try {
+                await refreshLedger();
+            } catch (error) {
+                document.getElementById("tickerMessage").textContent += ` Paper ledger unavailable: ${error.message}`;
+            }
+
+            const select = document.getElementById("matchupSelect");
+            select.innerHTML = "";
+            const divisions = {};
+            WEEK_4_GAMES.forEach(game => {
+                if (!divisions[game.division]) divisions[game.division] = [];
+                divisions[game.division].push(game);
+            });
+
+            Object.keys(divisions).forEach(division => {
+                const optGroup = document.createElement("optgroup");
+                optGroup.label = division.toUpperCase();
+                divisions[division].forEach(game => {
+                    const option = document.createElement("option");
+                    option.value = game.id;
+                    option.textContent = `${game.awayTeam} @ ${game.homeTeam} [${game.status}]`;
+                    optGroup.appendChild(option);
+                });
+                select.appendChild(optGroup);
+            });
+
+            select.value = selectedGameId;
+            updateMatchupPod();
+        }
+
+        async function addManualMatchup(event) {
+            event.preventDefault();
+            const response = await fetch("/api/schedule/manual", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    year: new Date().getMonth() < 2 ? new Date().getFullYear() - 1 : new Date().getFullYear(),
+                    week: Number(document.getElementById("manualWeek").value),
+                    away_team: document.getElementById("manualAwayTeam").value.trim(),
+                    home_team: document.getElementById("manualHomeTeam").value.trim()
+                })
+            });
+            if (!response.ok) {
+                alert(`Could not save matchup: ${await response.text()}`);
+                return;
+            }
+            const result = await response.json();
+            await initDropdown();
+            selectedGameId = result.game.event_id;
+            document.getElementById("matchupSelect").value = selectedGameId;
+            updateMatchupPod();
+            document.getElementById("manualAwayTeam").value = "";
+            document.getElementById("manualHomeTeam").value = "";
+        }
+
+        function normalizeTeamName(name) {
+            return (name || "").toLowerCase().replace(/[^a-z]/g, "");
+        }
+
+        async function loadMarkets() {
+            WAGERS_DATABASE = {};
+            try {
+                const response = await fetch("/api/markets");
+                const payload = await response.json();
+                if (!response.ok) throw new Error(payload.error || `Market request failed (${response.status})`);
+
+                let loadedCount = 0;
+                for (const marketGame of payload) {
+                    const game = WEEK_4_GAMES.find(item =>
+                        normalizeTeamName(item.awayTeam) === normalizeTeamName(marketGame.away) &&
+                        normalizeTeamName(item.homeTeam) === normalizeTeamName(marketGame.home)
+                    );
+                    if (!game) continue;
+
+                    WAGERS_DATABASE[game.id] = (marketGame.wagers || []).map((wager, index) => ({
+                        id: `${marketGame.event_id}_${index}`,
+                        side: wager.side === "BOTH" ? "SHARED" : wager.side,
+                        target: wager.target,
+                        market: wager.market,
+                        odds: `${wager.odds > 0 ? "+" : ""}${wager.odds}`,
+                        oddsNum: wager.odds,
+                        fairProb: `${(wager.fair_market_prob * 100).toFixed(1)}%`,
+                        impliedProb: `${(wager.implied_prob * 100).toFixed(1)}%`,
+                        tier: 2,
+                        badges: ["LIVE MARKET"],
+                        helmet: wager.side === "HOME" ? game.homeAbbr.toLowerCase() : game.awayAbbr.toLowerCase(),
+                        factor: "No independent model probability is available; this is sportsbook pricing only."
+                    }));
+                    loadedCount += WAGERS_DATABASE[game.id].length;
+                }
+
+                marketLoadMessage = loadedCount
+                    ? `${loadedCount} live sportsbook outcomes loaded. No model edge is being claimed.`
+                    : "No matching live sportsbook markets were returned. No picks are being generated.";
+            } catch (error) {
+                marketLoadMessage = `${error.message} No picks are being generated.`;
+            }
+            document.getElementById("tickerMessage").textContent = marketLoadMessage;
+        }
+
+        function updateMatchupPod() {
+            const game = WEEK_4_GAMES.find(g => g.id === selectedGameId);
+            if (!game) return;
+
+            document.getElementById("awayTeamName").textContent = game.awayTeam;
+            document.getElementById("homeTeamName").textContent = game.homeTeam;
+            document.getElementById("matchupDivision").textContent = `Division: ${game.division}`;
+            document.getElementById("matchupStatus").textContent = game.status;
+            document.getElementById("matchupVenue").textContent = game.venue;
+            document.getElementById("activeSlateLabel").textContent = `Week ${game.week}`;
+
+            document.getElementById("awayHelmet").src = `https://a.espncdn.com/i/teamlogos/nfl/500/${game.awayAbbr.toLowerCase()}.png`;
+            document.getElementById("homeHelmet").src = `https://a.espncdn.com/i/teamlogos/nfl/500/${game.homeAbbr.toLowerCase()}.png`;
+
+            renderFeed();
+        }
+
+        function onSelectGame() {
+            selectedGameId = document.getElementById("matchupSelect").value;
+            updateMatchupPod();
+        }
+
+        function getDefaultStake() {
+            return 25.0;
+        }
+
+        function setPerspective(p) {
+            activePerspective = p;
+            document.getElementById("persp-away").classList.toggle("active", p === 'AWAY');
+            document.getElementById("persp-both").classList.toggle("active", p === 'BOTH');
+            document.getElementById("persp-home").classList.toggle("active", p === 'HOME');
+            renderFeed();
+        }
+
+        function setTab(tab) {
+            activeTab = tab;
+            document.getElementById("tab-slate").classList.toggle("active", tab === 'SLATE');
+            document.getElementById("tab-ledger").classList.toggle("active", tab === 'LEDGER');
+            renderFeed();
+        }
+
+        // Betting & Dynamic Settlement Logic
+        async function placePaperBet(wagerId) {
+            const gameWagers = WAGERS_DATABASE[selectedGameId] || [];
+            const w = gameWagers.find(item => item.id === wagerId);
+            if (!w) return;
+
+            const safeId = String(wagerId).replace(/[^a-zA-Z0-9_-]/g, "_");
+            const inputElem = document.getElementById(`stake-${safeId}`);
+            const stake = parseFloat(inputElem ? inputElem.value : getDefaultStake(w.tier)) || 25.0;
+
+            if (stake > ledger.availableBankroll) {
+                alert("Insufficient available bankroll!");
+                return;
+            }
+            if (!Number.isFinite(stake) || stake <= 0) {
+                alert("Enter a positive paper stake.");
+                return;
+            }
+
+            const game = WEEK_4_GAMES.find(item => item.id === selectedGameId);
+            const response = await fetch("/api/bets/place", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    id: w.id,
+                    week: game.week,
+                    game_id: game.id,
+                    matchup: `${game.awayTeam} @ ${game.homeTeam}`,
+                    side: w.side,
+                    market: w.market,
+                    target: w.target,
+                    oddsNum: w.oddsNum,
+                    stake
+                })
+            });
+            if (!response.ok) {
+                alert(`Could not save paper wager: ${await response.text()}`);
+                return;
+            }
+            await refreshLedger();
+        }
+
+        async function settleWager(wagerId, isWin) {
+            const response = await fetch("/api/bets/settle", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: wagerId, won: isWin })
+            });
+            if (!response.ok) {
+                alert(`Could not settle paper wager: ${await response.text()}`);
+                return;
+            }
+            await refreshLedger();
+        }
+
+        async function refreshLedger() {
+            const [performanceResponse, wagersResponse] = await Promise.all([
+                fetch("/api/ledger/performance"),
+                fetch("/api/ledger/wagers")
+            ]);
+            if (!performanceResponse.ok || !wagersResponse.ok) {
+                throw new Error("Could not load saved paper ledger data.");
+            }
+
+            const performance = await performanceResponse.json();
+            const wagers = await wagersResponse.json();
+            ledger.baseBankroll = performance.base_bankroll;
+            ledger.startingBankroll = performance.base_bankroll;
+            ledger.availableBankroll = performance.current_bankroll;
+            ledger.pendingExposure = performance.pending_exposure;
+            ledger.totalStaked = performance.total_staked;
+            ledger.netPnl = performance.net_pnl;
+            ledger.wins = performance.wins;
+            ledger.losses = performance.losses;
+            ledger.wagers = wagers.map(wager => ({
+                id: wager.id,
+                target: wager.target,
+                stake: wager.stake,
+                oddsNum: wager.odds,
+                side: wager.side,
+                market: wager.market,
+                gameId: wager.game_id,
+                status: wager.status,
+                pnl: wager.net_pnl || 0
+            }));
+            syncLedgerUI();
+        }
+
+        function syncLedgerUI() {
+            const settledCount = ledger.wins + ledger.losses;
+            const pending = ledger.wagers.filter(w => w.status === 'PENDING').length;
+            const winRate = settledCount > 0 ? ((ledger.wins / settledCount) * 100).toFixed(1) : "0.0";
+            const roi = ledger.totalStaked > 0 ? ((ledger.netPnl / ledger.totalStaked) * 100).toFixed(1) : "0.0";
+
+            document.getElementById("inputStartingBankroll").value = ledger.baseBankroll.toFixed(2);
+            document.getElementById("stat-record").textContent = `${ledger.wins} – ${ledger.losses}`;
+            document.getElementById("stat-winrate").textContent = `${winRate}%`;
+
+            const pnlElem = document.getElementById("stat-pnl");
+            pnlElem.textContent = `${ledger.netPnl >= 0 ? '+' : ''}$${ledger.netPnl.toFixed(2)}`;
+            pnlElem.style.color = ledger.netPnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+
+            const roiElem = document.getElementById("stat-roi");
+            roiElem.textContent = `${Number(roi) >= 0 ? '+' : ''}${roi}%`;
+
+            document.getElementById("stat-roll").textContent = `$${ledger.availableBankroll.toFixed(2)}`;
+            document.getElementById("dispAvailableBankroll").textContent = `$${ledger.availableBankroll.toFixed(2)}`;
+            document.getElementById("dispActiveWagers").textContent = `${pending} Placed`;
+
+            renderFeed();
+        }
+
+        function updatePayout(wagerId, oddsNum) {
+            const input = document.getElementById(`stake-${wagerId}`);
+            const stake = parseFloat(input.value) || 0;
+            const profit = oddsNum > 0 ? stake * (oddsNum / 100.0) : stake * (100.0 / Math.abs(oddsNum));
+            const total = stake + profit;
+
+            const disp = document.getElementById(`payout-${wagerId}`);
+            if (disp) {
+                disp.innerHTML = `Profit: <strong>+$${profit.toFixed(2)}</strong> | Total: <strong>$${total.toFixed(2)}</strong>`;
+            }
+        }
+
+        function renderFeed() {
+            const feed = document.getElementById("wagersFeed");
+            feed.innerHTML = "";
+
+            if (activeTab === "LEDGER") {
+                if (ledger.wagers.length === 0) {
+                    feed.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text-secondary);">No paper wagers have been recorded.</div>`;
+                    return;
+                }
+                feed.appendChild(createSectionBar("SAVED PAPER WAGERS", ledger.wagers.length));
+                ledger.wagers.forEach(wager => {
+                    const card = document.createElement("div");
+                    card.className = "wager-card";
+                    const statusLabel = wager.status === "PENDING" ? "PENDING" : `SETTLED: ${wager.status}`;
+                    const pnl = Number(wager.pnl || 0);
+                    const pnlLabel = wager.status === "PENDING" ? "Pending" : `${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
+                    const settlementControls = wager.status === "PENDING"
+                        ? `<div style="display:flex; gap:6px;"><button class="btn-win-settle" onclick="settleWager('${escapeHtml(wager.id)}', true)">✓ Win</button><button class="btn-loss-settle" onclick="settleWager('${escapeHtml(wager.id)}', false)">✕ Loss</button></div>`
+                        : `<strong>${pnlLabel}</strong>`;
+                    card.innerHTML = `
+                        <div class="card-top"><div class="tags-row"><span class="badge badge-blue">${statusLabel}</span><span class="badge badge-dark">${escapeHtml(wager.matchup || "")}</span></div><div class="pricing-block"><div class="odds-val">${Number(wager.oddsNum) > 0 ? "+" : ""}${Number(wager.oddsNum)}</div><div class="fair-prob">Saved paper price</div></div></div>
+                        <div class="wager-title-row"><span class="target-name">${escapeHtml(wager.target)}</span></div>
+                        <div class="card-action-row"><span>Stake: $${Number(wager.stake).toFixed(2)}</span>${settlementControls}</div>
+                    `;
+                    feed.appendChild(card);
+                });
+                return;
+            }
+
+            const rawWagers = WAGERS_DATABASE[selectedGameId] || [];
+            let wagers = rawWagers.filter(w => {
+                if (activePerspective === 'AWAY' && w.side !== 'AWAY') return false;
+                if (activePerspective === 'HOME' && w.side !== 'HOME') return false;
+                return true;
+            });
+
+            if (wagers.length === 0) {
+                feed.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text-secondary);">${escapeHtml(marketLoadMessage)}</div>`;
+                return;
+            }
+
+            // Group into Visitor, Shared, Host
+            const visitorWagers = wagers.filter(w => w.side === 'AWAY');
+            const sharedWagers = wagers.filter(w => w.side === 'SHARED');
+            const hostWagers = wagers.filter(w => w.side === 'HOME');
+
+            if (visitorWagers.length > 0) {
+                feed.appendChild(createSectionBar(`✈️ VISITOR WAGERS`, visitorWagers.length));
+                visitorWagers.forEach(w => feed.appendChild(renderCard(w)));
+            }
+
+            if (sharedWagers.length > 0) {
+                feed.appendChild(createSectionBar(`⚖️ GAME TOTALS & SHARED MARKETS`, sharedWagers.length));
+                sharedWagers.forEach(w => feed.appendChild(renderCard(w)));
+            }
+
+            if (hostWagers.length > 0) {
+                feed.appendChild(createSectionBar(`🏠 HOST WAGERS`, hostWagers.length));
+                hostWagers.forEach(w => feed.appendChild(renderCard(w)));
+            }
+        }
+
+        function createSectionBar(title, count) {
+            const div = document.createElement("div");
+            div.className = "section-bar";
+            div.innerHTML = `<span>${title}</span> <span class="section-badge">${count} Markets</span>`;
+            return div;
+        }
+
+        function escapeHtml(value) {
+            return String(value).replace(/[&<>"']/g, character => ({
+                "&": "&amp;",
+                "<": "&lt;",
+                ">": "&gt;",
+                '"': "&quot;",
+                "'": "&#39;"
+            })[character]);
+        }
+
+        function renderCard(w) {
+            const wagerState = ledger.wagers.find(item => item.id === w.id);
+            const isPending = wagerState && wagerState.status === 'PENDING';
+            const isWin = wagerState && wagerState.status === 'WIN';
+            const isLoss = wagerState && wagerState.status === 'LOSS';
+
+            const defaultStake = getDefaultStake();
+            const currentStake = wagerState ? wagerState.stake : defaultStake;
+            const profit = w.oddsNum > 0 ? currentStake * (w.oddsNum / 100.0) : currentStake * (100.0 / Math.abs(w.oddsNum));
+            const safeId = String(w.id).replace(/[^a-zA-Z0-9_-]/g, "_");
+
+            const card = document.createElement("div");
+            card.className = "wager-card";
+
+            let badgesHtml = w.badges.map(b => `<span class="badge badge-blue">${escapeHtml(b)}</span>`).join('');
+            if (isWin) badgesHtml += `<span class="badge badge-win">SETTLED: WIN</span>`;
+            if (isLoss) badgesHtml += `<span class="badge badge-loss">SETTLED: LOSS</span>`;
+
+            let actionHtml = '';
+            if (!wagerState) {
+                actionHtml = `<button class="btn-bet" onclick="placePaperBet('${w.id}')">+ Place Paper Bet</button>`;
+            } else if (isPending) {
+                actionHtml = `
+                    <div style="display:flex; gap:6px;">
+                        <button class="btn-win-settle" onclick="settleWager('${w.id}', true)">✓ Win</button>
+                        <button class="btn-loss-settle" onclick="settleWager('${w.id}', false)">✕ Loss</button>
+                    </div>
+                `;
+            } else if (isWin) {
+                actionHtml = `<span style="color:var(--accent-green); font-weight:800; font-family:var(--font-mono);">SETTLED: WIN (+$${wagerState.pnl.toFixed(2)})</span>`;
+            } else if (isLoss) {
+                actionHtml = `<span style="color:var(--accent-red); font-weight:800; font-family:var(--font-mono);">SETTLED: LOSS (-$${wagerState.stake.toFixed(2)})</span>`;
+            }
+
+            card.innerHTML = `
+                <div class="card-top">
+                    <div class="tags-row">${badgesHtml}</div>
+                    <div class="pricing-block">
+                        <div class="odds-val">${escapeHtml(w.odds)}</div>
+                        <div class="fair-prob">No-vig market: ${escapeHtml(w.fairProb)}</div>
+                    </div>
+                </div>
+
+                <div class="wager-title-row">
+                    <img class="card-helmet" src="https://a.espncdn.com/i/teamlogos/nfl/500/${encodeURIComponent(w.helmet)}.png" onerror="this.src='https://a.espncdn.com/i/teamlogos/nfl/500/nfl.png'" alt="team">
+                    <span class="target-name">${escapeHtml(w.target)}</span>
+                    <span class="edge-val">No model edge</span>
+                </div>
+
+                <div class="collision-analysis">
+                    <strong>${escapeHtml(w.market)}:</strong> ${escapeHtml(w.factor)}
+                </div>
+
+                <div class="card-action-row">
+                    <div class="stake-ctrl">
+                        <span>Stake ($):</span>
+                        <input type="number" min="0.01" step="0.01" id="stake-${safeId}" class="stake-input" value="${currentStake}" ${wagerState ? 'disabled' : ''} oninput="updatePayout('${safeId}', ${w.oddsNum})">
+                        <span class="payout-preview" id="payout-${safeId}">Profit: <strong>+$${profit.toFixed(2)}</strong> | Total: <strong>$${(currentStake + profit).toFixed(2)}</strong></span>
+                    </div>
+                    <div>${actionHtml}</div>
+                </div>
+            `;
+
+            return card;
+        }
+
+        function resetAllFilters() {
+            activePerspective = 'BOTH';
+            document.getElementById("persp-both").classList.add("active");
+            document.getElementById("persp-away").classList.remove("active");
+            document.getElementById("persp-home").classList.remove("active");
+            renderFeed();
+        }
+
+        function exportCsv() {
+            let csv = "ID,Target,Stake,Odds,Status,NetPnL\n";
+            ledger.wagers.forEach(w => {
+                csv += `${w.id},"${w.target}",${w.stake},${w.oddsNum},${w.status},${w.pnl.toFixed(2)}\n`;
+            });
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `DK_Ledger_${new Date().toISOString().slice(0,10)}.csv`;
+            a.click();
+        }
+
+        // Initialize App on DOM Ready
+        window.addEventListener("DOMContentLoaded", () => {
+            initDropdown();
+        });
+    </script>
+</body>
+</html>
