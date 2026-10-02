@@ -6,6 +6,7 @@ import socketserver
 import time
 import urllib.parse
 import uuid
+from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer
 from curl_cffi import requests
 from app import fetch_espn_fallback
@@ -60,6 +61,42 @@ def init_db():
             cursor.execute("ALTER TABLE wagers ADD COLUMN tier INTEGER DEFAULT 2")
         if "strategy_mode" not in wager_columns:
             cursor.execute("ALTER TABLE wagers ADD COLUMN strategy_mode TEXT DEFAULT 'TIERED'")
+        for column, definition in (
+            ("snapshot_id", "INTEGER"),
+            ("price_source", "TEXT"),
+            ("price_observed_at", "TEXT"),
+            ("fair_market_prob", "REAL"),
+        ):
+            if column not in wager_columns:
+                cursor.execute(f"ALTER TABLE wagers ADD COLUMN {column} {definition}")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS market_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL,
+                market TEXT NOT NULL,
+                side TEXT NOT NULL,
+                target TEXT NOT NULL,
+                odds REAL NOT NULL,
+                implied_prob REAL NOT NULL,
+                fair_market_prob REAL NOT NULL,
+                source TEXT NOT NULL,
+                observed_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_market_snapshots_event ON market_snapshots(event_id, observed_at);")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS game_results (
+                event_id TEXT PRIMARY KEY,
+                away_team TEXT NOT NULL,
+                home_team TEXT NOT NULL,
+                away_score INTEGER NOT NULL,
+                home_score INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                observed_at TEXT NOT NULL
+            )
+        """)
 
         # 2. Season Schedule Table
         cursor.execute("""
@@ -218,6 +255,83 @@ def create_manual_matchup(body: dict) -> dict:
         "venue": "Venue unavailable", "wagers": [],
     }
 
+
+def persist_market_snapshots(games: list[dict], observed_at: str | None = None) -> None:
+    observed_at = observed_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with sqlite3.connect(DB_FILE) as conn:
+        for game in games:
+            event_id = str(game.get("event_id", ""))
+            by_market = {}
+            for wager in game.get("wagers", []):
+                by_market.setdefault(wager.get("market"), []).append(wager)
+
+            for market, outcomes in by_market.items():
+                if not event_id or not market or len(outcomes) != 2:
+                    continue
+                if {outcome.get("side") for outcome in outcomes} == {"HOME", "AWAY"}:
+                    pass
+                elif {outcome.get("target", "").split(" ", 1)[0] for outcome in outcomes} != {"Over", "Under"}:
+                    continue
+                try:
+                    valid = all(
+                        math.isfinite(float(outcome["odds"]))
+                        and float(outcome["odds"]) != 0
+                        and math.isfinite(float(outcome["implied_prob"]))
+                        and 0 < float(outcome["implied_prob"]) < 1
+                        and math.isfinite(float(outcome["fair_market_prob"]))
+                        and 0 < float(outcome["fair_market_prob"]) < 1
+                        for outcome in outcomes
+                    )
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
+                if not valid:
+                    continue
+
+                for outcome in outcomes:
+                    cursor = conn.execute("""
+                        INSERT INTO market_snapshots
+                        (event_id, market, side, target, odds, implied_prob, fair_market_prob, source, observed_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        event_id, market, outcome["side"], outcome["target"], outcome["odds"],
+                        outcome["implied_prob"], outcome["fair_market_prob"],
+                        outcome.get("source") or "DraftKings via ESPN", observed_at,
+                    ))
+                    outcome["snapshot_id"] = cursor.lastrowid
+                    outcome["observed_at"] = observed_at
+        conn.commit()
+
+
+def save_final_game_results(games: list[dict], observed_at: str | None = None) -> None:
+    observed_at = observed_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with sqlite3.connect(DB_FILE) as conn:
+        for game in games:
+            if not game.get("completed"):
+                continue
+            try:
+                away_score = int(game["away_score"])
+                home_score = int(game["home_score"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            event_id = str(game.get("event_id", ""))
+            if not event_id:
+                continue
+            conn.execute("""
+                INSERT INTO game_results
+                (event_id, away_team, home_team, away_score, home_score, source, observed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                    away_team = excluded.away_team, home_team = excluded.home_team,
+                    away_score = excluded.away_score, home_score = excluded.home_score,
+                    source = excluded.source, observed_at = excluded.observed_at
+            """, (
+                event_id, game.get("away", game.get("away_team", "")),
+                game.get("home", game.get("home_team", "")), away_score, home_score,
+                "ESPN", observed_at,
+            ))
+        conn.commit()
+
+
 def get_real_player_stat(event_id: str, player_name: str, market_type: str) -> float:
     """Queries official ESPN box-score summary endpoint to settle props against real stats."""
     url = f"{ESPN_SUMMARY_BASE}?event={event_id}"
@@ -258,7 +372,10 @@ def get_real_player_stat(event_id: str, player_name: str, market_type: str) -> f
         print(f"[!] Box score lookup failed for {player_name}: {e}")
     return None
 
-def compute_settlement_pnl(stake: float, odds: float, won: bool) -> tuple[float, float]:
+def compute_settlement_pnl(stake: float, odds: float, result: bool | str) -> tuple[float, float]:
+    if result in ("PUSH", "VOID"):
+        return round(stake, 2), 0.0
+    won = result is True or result == "WIN"
     if not won:
         return 0.0, -round(stake, 2)
     profit = stake * (odds / 100.0) if odds > 0 else stake * (100.0 / abs(odds))
@@ -271,12 +388,14 @@ def calculate_actual_ledger_stats(strategy_mode="TIERED"):
         cursor.execute("""
             SELECT status, stake, net_pnl, odds 
             FROM wagers 
-            WHERE status IN ('WIN', 'LOSS')
+            WHERE status IN ('WIN', 'LOSS', 'PUSH', 'VOID')
         """)
         rows = cursor.fetchall()
         
         wins = sum(1 for r in rows if r[0] == "WIN")
         losses = sum(1 for r in rows if r[0] == "LOSS")
+        pushes = sum(1 for r in rows if r[0] == "PUSH")
+        voids = sum(1 for r in rows if r[0] == "VOID")
         total_bets = wins + losses
         total_staked = sum(r[1] for r in rows)
         total_net_pnl = sum(r[2] for r in rows)
@@ -292,9 +411,11 @@ def calculate_actual_ledger_stats(strategy_mode="TIERED"):
         current_bankroll = base_deposits + total_net_pnl - pending_exposure
 
         return {
-            "record": f"{wins} – {losses}",
+            "record": f"{wins} – {losses} – {pushes} pushes – {voids} voids",
             "wins": wins,
             "losses": losses,
+            "pushes": pushes,
+            "voids": voids,
             "win_rate": f"{win_rate:.1f}%",
             "total_staked": round(total_staked, 2),
             "net_pnl": round(total_net_pnl, 2),
@@ -390,13 +511,47 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
                 }).encode("utf-8"))
                 return
 
+            persist_market_snapshots(games)
+            save_final_game_results(games)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps([
-                {"event_id": game["event_id"], "away": game["away"], "home": game["home"], "wagers": game["wagers"]}
+                {
+                    "event_id": game["event_id"], "away": game["away"], "home": game["home"],
+                    "away_score": game.get("away_score"), "home_score": game.get("home_score"),
+                    "status": game.get("status"), "completed": game.get("completed", False),
+                    "wagers": game["wagers"],
+                }
                 for game in games
             ]).encode("utf-8"))
+            return
+
+        elif parsed.path == "/api/markets/snapshots":
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.row_factory = sqlite3.Row
+                items = [dict(row) for row in conn.execute("""
+                    SELECT id, event_id, market, side, target, odds, implied_prob,
+                           fair_market_prob, source, observed_at
+                    FROM market_snapshots ORDER BY observed_at DESC, id DESC LIMIT 500
+                """)]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(items).encode("utf-8"))
+            return
+
+        elif parsed.path == "/api/history/results":
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.row_factory = sqlite3.Row
+                items = [dict(row) for row in conn.execute("""
+                    SELECT event_id, away_team, home_team, away_score, home_score, source, observed_at
+                    FROM game_results ORDER BY observed_at DESC LIMIT 500
+                """)]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(items).encode("utf-8"))
             return
 
         # 3. Retrieve All Stored Wagers
@@ -404,7 +559,8 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
             with sqlite3.connect(DB_FILE) as conn:
                 c = conn.cursor()
                 c.execute("""
-                    SELECT id, week, game_id, matchup, side, market, target, odds, edge, tier, stake, status, net_pnl
+                    SELECT id, week, game_id, matchup, side, market, target, odds, edge, tier, stake,
+                           status, net_pnl, snapshot_id, price_source, price_observed_at, fair_market_prob
                     FROM wagers 
                     ORDER BY timestamp DESC
                 """)
@@ -412,7 +568,8 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
                     {
                         "id": r[0], "week": r[1], "game_id": r[2], "matchup": r[3], "side": r[4],
                         "market": r[5], "target": r[6], "odds": r[7], "edge": r[8], "tier": r[9],
-                        "stake": r[10], "status": r[11], "net_pnl": r[12]
+                        "stake": r[10], "status": r[11], "net_pnl": r[12], "snapshot_id": r[13],
+                        "price_source": r[14], "price_observed_at": r[15], "fair_market_prob": r[16],
                     }
                     for r in c.fetchall()
                 ]
@@ -458,9 +615,10 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
                 tier = int(body.get("tier", 2))
                 stake = float(body.get("stake", 25))
                 week = int(body.get("week", 4))
+                snapshot_id = int(body["snapshot_id"])
                 if (not wager_id or len(wager_id) > 128 or not math.isfinite(odds) or odds == 0
                         or not math.isfinite(edge) or not math.isfinite(stake) or stake <= 0
-                        or tier not in (1, 2) or week < 1):
+                        or tier not in (1, 2) or week < 1 or snapshot_id <= 0):
                     raise ValueError
             except (KeyError, TypeError, ValueError, OverflowError):
                 self.send_error(400, "Invalid wager fields")
@@ -468,15 +626,40 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
 
             with sqlite3.connect(DB_FILE) as conn:
                 cursor = conn.cursor()
+                snapshot = cursor.execute("""
+                    SELECT event_id, market, target, odds, source, observed_at, fair_market_prob
+                    FROM market_snapshots WHERE id = ?
+                """, (snapshot_id,)).fetchone()
+                if not snapshot:
+                    self.send_error(400, "A saved real-market snapshot is required")
+                    return
+                try:
+                    observed_at = datetime.fromisoformat(snapshot[5])
+                    if observed_at.tzinfo is None:
+                        observed_at = observed_at.replace(tzinfo=timezone.utc)
+                    age_seconds = (datetime.now(timezone.utc) - observed_at.astimezone(timezone.utc)).total_seconds()
+                except (TypeError, ValueError):
+                    self.send_error(400, "Market snapshot timestamp is invalid")
+                    return
+                if age_seconds < 0 or age_seconds > 600:
+                    self.send_error(409, "Market price is stale; refresh live markets before recording a paper wager")
+                    return
+                if (str(body.get("game_id", "")) != snapshot[0]
+                        or str(body.get("market", "")) != snapshot[1]
+                        or str(body.get("target", "")) != snapshot[2]
+                        or odds != snapshot[3]):
+                    self.send_error(400, "Wager details do not match the saved market snapshot")
+                    return
                 cursor.execute("""
                     INSERT OR IGNORE INTO wagers
-                    (id, week, game_id, matchup, side, market, target, odds, edge, tier, stake, status, payout, net_pnl, strategy_mode)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0.0, 0.0, ?)
+                    (id, week, game_id, matchup, side, market, target, odds, edge, tier, stake, status,
+                     payout, net_pnl, strategy_mode, snapshot_id, price_source, price_observed_at, fair_market_prob)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0.0, 0.0, ?, ?, ?, ?, ?)
                 """, (
                     wager_id, week, body.get("game_id", ""), body.get("matchup", ""),
-                    body.get("side", ""), body.get("market", ""), body.get("target", ""),
-                    odds, edge, tier, stake,
-                    body.get("strategy_mode", "TIERED")
+                    body.get("side", ""), snapshot[1], snapshot[2],
+                    odds, edge, tier, stake, body.get("strategy_mode", "TIERED"),
+                    snapshot_id, snapshot[4], snapshot[5], snapshot[6],
                 ))
                 if cursor.rowcount != 1:
                     self.send_error(409, "A wager with this ID already exists")
@@ -497,28 +680,28 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
                 return
             
             wager_id = body.get("id")
-            won = body.get("won")
-            if not isinstance(wager_id, str) or not wager_id or not isinstance(won, bool):
-                self.send_error(400, "A wager ID and boolean won value are required")
+            result = body.get("result")
+            if result is None and isinstance(body.get("won"), bool):
+                result = "WIN" if body["won"] else "LOSS"
+            if (not isinstance(wager_id, str) or not wager_id
+                    or result not in ("WIN", "LOSS", "PUSH", "VOID")):
+                self.send_error(400, "A wager ID and WIN, LOSS, PUSH, or VOID result are required")
                 return
 
             with sqlite3.connect(DB_FILE) as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT stake, odds FROM wagers WHERE id = ? AND status = 'PENDING'", (wager_id,))
+                cursor.execute("SELECT stake, odds FROM wagers WHERE id = ?", (wager_id,))
                 row = cursor.fetchone()
                 if not row:
-                    self.send_error(409, "Wager does not exist or is already settled")
+                    self.send_error(404, "Wager does not exist")
                     return
                 stake, odds = row[0], row[1]
-                payout, net_pnl = compute_settlement_pnl(stake, odds, won)
+                payout, net_pnl = compute_settlement_pnl(stake, odds, result)
                 cursor.execute("""
                     UPDATE wagers
                     SET status = ?, payout = ?, net_pnl = ?
-                    WHERE id = ? AND status = 'PENDING'
-                """, ('WIN' if won else 'LOSS', payout, net_pnl, wager_id))
-                if cursor.rowcount != 1:
-                    self.send_error(409, "Wager was settled by another request")
-                    return
+                    WHERE id = ?
+                """, (result, payout, net_pnl, wager_id))
                 conn.commit()
 
             stats = calculate_actual_ledger_stats()

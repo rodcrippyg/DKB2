@@ -803,125 +803,6 @@
 
     <!-- Script: Full Application Engine -->
     <script>
-        // Official Divisional Schedule Dataset for Week 4 (Oct 1 - Oct 5, 2026)
-        const LEGACY_DEMO_GAMES = [
-            { id: "401760017", division: "AFC North", awayTeam: "Pittsburgh Steelers", awayAbbr: "PIT", homeTeam: "Cleveland Browns", homeAbbr: "CLE", status: "Thu 8:15 PM ET", venue: "Huntington Bank Field" },
-            { id: "401760018", division: "International", awayTeam: "Indianapolis Colts", awayAbbr: "IND", homeTeam: "Washington Commanders", homeAbbr: "WSH", status: "Sun 9:30 AM ET", venue: "London Stadium" },
-            { id: "401760019", division: "AFC East", awayTeam: "New England Patriots", awayAbbr: "NE", homeTeam: "Buffalo Bills", homeAbbr: "BUF", status: "Sun 1:00 PM ET", venue: "Highmark Stadium" },
-            { id: "401760020", division: "Cross-Conference", awayTeam: "Dallas Cowboys", awayAbbr: "DAL", homeTeam: "Houston Texans", homeAbbr: "HOU", status: "Sun 1:00 PM ET", venue: "NRG Stadium" },
-            { id: "401760021", division: "Cross-Conference", awayTeam: "New York Jets", awayAbbr: "NYJ", homeTeam: "Chicago Bears", homeAbbr: "CHI", status: "Sun 1:00 PM ET", venue: "Soldier Field" },
-            { id: "401760022", division: "AFC North", awayTeam: "Jacksonville Jaguars", awayAbbr: "JAX", homeTeam: "Cincinnati Bengals", homeAbbr: "CIN", status: "Sun 1:00 PM ET", venue: "Paycor Stadium" },
-            { id: "401760023", division: "NFC South", awayTeam: "Green Bay Packers", awayAbbr: "GB", homeTeam: "Tampa Bay Buccaneers", homeAbbr: "TB", status: "Sun 1:00 PM ET", venue: "Raymond James Stadium" },
-            { id: "401760024", division: "AFC North", awayTeam: "Tennessee Titans", awayAbbr: "TEN", homeTeam: "Baltimore Ravens", homeAbbr: "BAL", status: "Sun 1:00 PM ET", venue: "M&T Bank Stadium" },
-            { id: "401760025", division: "NFC East", awayTeam: "Arizona Cardinals", awayAbbr: "ARI", homeTeam: "New York Giants", homeAbbr: "NYG", status: "Sun 1:00 PM ET", venue: "MetLife Stadium" },
-            { id: "401760026", division: "NFC East", awayTeam: "Los Angeles Rams", awayAbbr: "LAR", homeTeam: "Philadelphia Eagles", homeAbbr: "PHI", status: "Sun 1:00 PM ET", venue: "Lincoln Financial Field" },
-            { id: "401760027", division: "NFC North", awayTeam: "Miami Dolphins", awayAbbr: "MIA", homeTeam: "Minnesota Vikings", homeAbbr: "MIN", status: "Sun 4:05 PM ET", venue: "U.S. Bank Stadium" },
-            { id: "401760028", division: "AFC West", awayTeam: "Kansas City Chiefs", awayAbbr: "KC", homeTeam: "Las Vegas Raiders", homeAbbr: "LV", status: "Sun 4:25 PM ET", venue: "Allegiant Stadium" },
-            { id: "401760029", division: "Cross-Conference", awayTeam: "Denver Broncos", awayAbbr: "DEN", homeTeam: "San Francisco 49ers", homeAbbr: "SF", status: "Sun 4:25 PM ET", venue: "Levi's Stadium" },
-            { id: "401760030", division: "Cross-Conference", awayTeam: "Los Angeles Chargers", awayAbbr: "LAC", homeTeam: "Seattle Seahawks", homeAbbr: "SEA", status: "Sun 4:25 PM ET", venue: "Lumen Field" },
-            { id: "401760031", division: "SNF", awayTeam: "Detroit Lions", awayAbbr: "DET", homeTeam: "Carolina Panthers", homeAbbr: "CAR", status: "Sun 8:20 PM ET", venue: "Bank of America Stadium" },
-            { id: "401760032", division: "MNF", awayTeam: "Atlanta Falcons", awayAbbr: "ATL", homeTeam: "New Orleans Saints", homeAbbr: "NO", status: "Mon 8:15 PM ET", venue: "Caesars Superdome" }
-        ];
-
-        // Market Intelligence Repository for Week 4 Matchups
-        const LEGACY_DEMO_WAGERS = {
-            "401760017": [ // PIT @ CLE
-                {
-                    id: "w4_pit_cle_1",
-                    side: "AWAY",
-                    target: "Pittsburgh Steelers -2.5",
-                    odds: "-110",
-                    oddsNum: -110,
-                    fairProb: "55.8%",
-                    edge: 4.8,
-                    tier: 2,
-                    badges: ["CONFIRMED VALUE PICK", "COVER EDGE", "Trench Advantage"],
-                    helmet: "pit",
-                    factor: "Steelers defensive line ranks #1 in pass rush win rate against Cleveland's offensive tackles, preventing clean drops over 4 quarters."
-                },
-                {
-                    id: "w4_pit_cle_2",
-                    side: "HOME",
-                    target: "Jameis Winston Under 208.5 Pass Yds",
-                    odds: "-110",
-                    oddsNum: -110,
-                    fairProb: "58.6%",
-                    edge: 6.4,
-                    tier: 1,
-                    badges: ["CONFIRMED VALUE PICK", "COLLISION CHOKE", "Pocket Delta: -0.48s"],
-                    helmet: "cle",
-                    factor: "Winston requires 2.82s release; T.J. Watt and Highsmith arrive in 2.34s. The -0.48s pocket deficit collapses downfield pass concepts."
-                },
-                {
-                    id: "w4_pit_cle_3",
-                    side: "AWAY",
-                    target: "Jaylen Warren Over 3.5 Receptions",
-                    odds: "+105",
-                    oddsNum: 105,
-                    fairProb: "54.2%",
-                    edge: 5.8,
-                    tier: 2,
-                    badges: ["CONFIRMED VALUE PICK", "TARGET FUNNEL", "Blitz Safety Valve"],
-                    helmet: "pit",
-                    factor: "Cleveland aggressive A-gap blitz packages trigger instant hot reads and checkdown targets to Warren on intermediate screens."
-                },
-                {
-                    id: "w4_pit_cle_4",
-                    side: "SHARED",
-                    target: "UNDER 38.5 Total Points",
-                    odds: "-110",
-                    oddsNum: -110,
-                    fairProb: "54.4%",
-                    edge: 4.6,
-                    tier: 2,
-                    badges: ["CONFIRMED VALUE PICK", "DEFENSIVE TRENCH"],
-                    helmet: "nfl",
-                    factor: "Divisional conditions and two dominant defensive fronts limit explosive drive conversion efficiency."
-                }
-            ],
-            "401760019": [ // NE @ BUF
-                {
-                    id: "w4_ne_buf_1",
-                    side: "HOME",
-                    target: "Josh Allen Anytime Touchdown",
-                    odds: "+115",
-                    oddsNum: 115,
-                    fairProb: "53.2%",
-                    edge: 7.4,
-                    tier: 1,
-                    badges: ["CONFIRMED VALUE PICK", "RED-ZONE PRIORITY", "Goal-Line Sneak Share: 64%"],
-                    helmet: "buf",
-                    factor: "Inside the 3-yard line, Josh Allen claims 64% of high-leverage touches and converts at an 82% clip over bookmaker juice."
-                },
-                {
-                    id: "w4_ne_buf_2",
-                    side: "AWAY",
-                    target: "Drake Maye Under 212.5 Pass Yds",
-                    odds: "-110",
-                    oddsNum: -110,
-                    fairProb: "56.8%",
-                    edge: 5.8,
-                    tier: 2,
-                    badges: ["CONFIRMED VALUE PICK", "COLLISION CHOKE", "Pocket Delta: -0.56s"],
-                    helmet: "ne",
-                    factor: "Maye's 2.94s release time cannot survive Buffalo's sub-2.38s edge pressure, suppressing chunk boundary completions."
-                },
-                {
-                    id: "w4_ne_buf_3",
-                    side: "AWAY",
-                    target: "Demario Douglas Over 4.5 Catches",
-                    odds: "+105",
-                    oddsNum: 105,
-                    fairProb: "54.8%",
-                    edge: 5.7,
-                    tier: 2,
-                    badges: ["CONFIRMED VALUE PICK", "TARGET FUNNEL", "Checkdown Target Share: 28%"],
-                    helmet: "ne",
-                    factor: "Underneath bracket coverage on perimeter receivers funnels quick 3-step drop passes straight to Douglas in the slot."
-                }
-            ]
-        };
-
         let WEEK_4_GAMES = [];
         let WAGERS_DATABASE = {};
         let marketLoadMessage = "Live odds have not loaded.";
@@ -1056,10 +937,13 @@
                         market: wager.market,
                         odds: `${wager.odds > 0 ? "+" : ""}${wager.odds}`,
                         oddsNum: wager.odds,
+                        snapshotId: wager.snapshot_id,
+                        priceSource: wager.source,
+                        priceObservedAt: wager.observed_at,
                         fairProb: `${(wager.fair_market_prob * 100).toFixed(1)}%`,
                         impliedProb: `${(wager.implied_prob * 100).toFixed(1)}%`,
                         tier: 2,
-                        badges: ["LIVE MARKET"],
+                        badges: ["LIVE SPORTSBOOK PRICE"],
                         helmet: wager.side === "HOME" ? game.homeAbbr.toLowerCase() : game.awayAbbr.toLowerCase(),
                         factor: "No independent model probability is available; this is sportsbook pricing only."
                     }));
@@ -1148,6 +1032,7 @@
                     market: w.market,
                     target: w.target,
                     oddsNum: w.oddsNum,
+                    snapshot_id: w.snapshotId,
                     stake
                 })
             });
@@ -1158,11 +1043,11 @@
             await refreshLedger();
         }
 
-        async function settleWager(wagerId, isWin) {
+        async function settleWager(wagerId, result) {
             const response = await fetch("/api/bets/settle", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ id: wagerId, won: isWin })
+                body: JSON.stringify({ id: wagerId, result })
             });
             if (!response.ok) {
                 alert(`Could not settle paper wager: ${await response.text()}`);
@@ -1198,6 +1083,10 @@
                 side: wager.side,
                 market: wager.market,
                 gameId: wager.game_id,
+                snapshotId: wager.snapshot_id,
+                priceSource: wager.price_source,
+                priceObservedAt: wager.price_observed_at,
+                fairProb: wager.fair_market_prob,
                 status: wager.status,
                 pnl: wager.net_pnl || 0
             }));
@@ -1257,10 +1146,10 @@
                     const pnl = Number(wager.pnl || 0);
                     const pnlLabel = wager.status === "PENDING" ? "Pending" : `${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
                     const settlementControls = wager.status === "PENDING"
-                        ? `<div style="display:flex; gap:6px;"><button class="btn-win-settle" onclick="settleWager('${escapeHtml(wager.id)}', true)">✓ Win</button><button class="btn-loss-settle" onclick="settleWager('${escapeHtml(wager.id)}', false)">✕ Loss</button></div>`
+                        ? `<div style="display:flex; flex-wrap:wrap; gap:6px;"><button class="btn-win-settle" onclick="settleWager('${escapeHtml(wager.id)}', 'WIN')">✓ Win</button><button class="btn-loss-settle" onclick="settleWager('${escapeHtml(wager.id)}', 'LOSS')">✕ Loss</button><button class="btn-loss-settle" onclick="settleWager('${escapeHtml(wager.id)}', 'PUSH')">Push</button><button class="btn-loss-settle" onclick="settleWager('${escapeHtml(wager.id)}', 'VOID')">Void</button></div>`
                         : `<strong>${pnlLabel}</strong>`;
                     card.innerHTML = `
-                        <div class="card-top"><div class="tags-row"><span class="badge badge-blue">${statusLabel}</span><span class="badge badge-dark">${escapeHtml(wager.matchup || "")}</span></div><div class="pricing-block"><div class="odds-val">${Number(wager.oddsNum) > 0 ? "+" : ""}${Number(wager.oddsNum)}</div><div class="fair-prob">Saved paper price</div></div></div>
+                        <div class="card-top"><div class="tags-row"><span class="badge badge-blue">${statusLabel}</span><span class="badge badge-dark">${escapeHtml(wager.matchup || "")}</span></div><div class="pricing-block"><div class="odds-val">${Number(wager.oddsNum) > 0 ? "+" : ""}${Number(wager.oddsNum)}</div><div class="fair-prob">${wager.fairProb == null ? "Market baseline unavailable" : `No-vig market: ${(Number(wager.fairProb) * 100).toFixed(1)}%`}</div></div></div>
                         <div class="wager-title-row"><span class="target-name">${escapeHtml(wager.target)}</span></div>
                         <div class="card-action-row"><span>Stake: $${Number(wager.stake).toFixed(2)}</span>${settlementControls}</div>
                     `;
@@ -1343,8 +1232,10 @@
             } else if (isPending) {
                 actionHtml = `
                     <div style="display:flex; gap:6px;">
-                        <button class="btn-win-settle" onclick="settleWager('${w.id}', true)">✓ Win</button>
-                        <button class="btn-loss-settle" onclick="settleWager('${w.id}', false)">✕ Loss</button>
+                        <button class="btn-win-settle" onclick="settleWager('${w.id}', 'WIN')">✓ Win</button>
+                        <button class="btn-loss-settle" onclick="settleWager('${w.id}', 'LOSS')">✕ Loss</button>
+                        <button class="btn-loss-settle" onclick="settleWager('${w.id}', 'PUSH')">Push</button>
+                        <button class="btn-loss-settle" onclick="settleWager('${w.id}', 'VOID')">Void</button>
                     </div>
                 `;
             } else if (isWin) {
@@ -1359,6 +1250,7 @@
                     <div class="pricing-block">
                         <div class="odds-val">${escapeHtml(w.odds)}</div>
                         <div class="fair-prob">No-vig market: ${escapeHtml(w.fairProb)}</div>
+                        <div class="fair-prob">${escapeHtml(w.priceSource || "Unknown source")} · ${escapeHtml(w.priceObservedAt || "timestamp unavailable")}</div>
                     </div>
                 </div>
 

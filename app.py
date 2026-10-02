@@ -119,6 +119,7 @@ def fetch_espn_fallback(
                         "odds": odds_value,
                         "implied_prob": american_to_implied(odds_value),
                         "fair_market_prob": fair_probability,
+                        "source": draftkings_odds.get("provider", {}).get("name", "DraftKings via ESPN"),
                     })
 
             home_name = home["team"]["displayName"]
@@ -163,6 +164,7 @@ def fetch_espn_fallback(
                 "home_abbr": home_abbr,
                 "home_score": home.get("score"),
                 "status": comp.get("status", {}).get("type", {}).get("shortDetail", "Scheduled"),
+                "completed": bool(comp.get("status", {}).get("type", {}).get("completed")),
                 "division": f"Week {event_week}" if event_week else "NFL",
                 "venue": comp.get("venue", {}).get("fullName", "Venue unavailable"),
                 "wagers": wagers,
