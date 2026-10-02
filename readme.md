@@ -16,6 +16,8 @@ The observation time is when this app fetched the odds feed, not a provider-conf
 
 Completed ESPN game scores are saved as results, with score changes retained in a correction history. Paper wagers can be settled as WIN, LOSS, PUSH, or VOID; push and void return the stake. Settlement changes replace the current ledger result rather than adding PnL twice, and each settlement or correction is audited. These records are for paper tracking and do not make an independent prediction.
 
+Use **Refresh final results** in the dashboard to re-fetch the selected NFL season from ESPN and update completed scores, including any corrected finals. The API equivalent is `POST /api/history/refresh` with an optional JSON `year` (2000-2100); if ESPN is unavailable, the request fails without changing saved results. Only games ESPN marks completed and supplies numeric scores are stored. Refreshing collects outcomes, not historical odds or model features.
+
 ## Setup
 
 From PowerShell in the project folder:

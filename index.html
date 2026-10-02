@@ -734,7 +734,10 @@
                     <span class="val" id="activeSlateLabel" style="color:var(--accent-blue);">Loading...</span>
                 </div>
             </div>
-            <button class="btn-export" onclick="exportCsv()">↓ Export PnL CSV</button>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button class="btn-export" id="refreshResultsButton" onclick="refreshFinalResults()">↻ Refresh final results</button>
+                <button class="btn-export" onclick="exportCsv()">↓ Export PnL CSV</button>
+            </div>
         </div>
 
         <!-- 5. Matchup Card (Dynamic) -->
@@ -1056,6 +1059,26 @@
                 return;
             }
             await refreshLedger();
+        }
+
+        async function refreshFinalResults() {
+            const button = document.getElementById("refreshResultsButton");
+            button.disabled = true;
+            try {
+                const response = await fetch("/api/history/refresh", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({})
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || `Refresh failed (${response.status})`);
+                document.getElementById("tickerMessage").textContent =
+                    `Season ${result.season_year}: refreshed ${result.completed_results_saved} completed results from ${result.games_fetched} ESPN games.`;
+            } catch (error) {
+                document.getElementById("tickerMessage").textContent = error.message;
+            } finally {
+                button.disabled = false;
+            }
         }
 
         function settlementButtons(wagerId) {

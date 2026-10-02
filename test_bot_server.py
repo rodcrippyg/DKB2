@@ -7,6 +7,7 @@ import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
+from unittest.mock import patch
 
 import bot_server
 
@@ -105,7 +106,7 @@ class SchedulePersistenceTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM game_result_history WHERE event_id = 'event-1'"
             ).fetchone()[0]
         self.assertEqual(result, (20, 21, "2026-10-02T20:00:00+00:00"))
-        self.assertEqual(history_count, 2)
+        self.assertEqual(history_count, 1)
 
     def test_push_and_void_return_stake(self):
         self.assertEqual(bot_server.compute_settlement_pnl(20, -110, "PUSH"), (20, 0.0))
@@ -195,6 +196,96 @@ class SchedulePersistenceTests(unittest.TestCase):
             self.assertEqual(response.status, 409)
         finally:
             connection.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    @patch("bot_server.fetch_espn_fallback")
+    def test_results_refresh_fetches_and_corrects_completed_games(self, mock_fetch):
+        games = [
+            {
+                "event_id": "final-1", "away": "Away", "home": "Home",
+                "away_score": "20", "home_score": "17", "completed": True,
+            },
+            {
+                "event_id": "scheduled-1", "away": "Next Away", "home": "Next Home",
+                "away_score": None, "home_score": None, "completed": False,
+            },
+        ]
+        mock_fetch.return_value = games
+        server = ThreadingHTTPServer(("127.0.0.1", 0), bot_server.UpgradedRequestHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def post(body):
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            connection.request(
+                "POST", "/api/history/refresh", json.dumps(body),
+                {"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            status, payload = response.status, response.read()
+            connection.close()
+            return status, json.loads(payload) if payload else {}
+
+        try:
+            status, payload = post({"year": 2026})
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["games_fetched"], 2)
+            self.assertEqual(payload["completed_results_saved"], 1)
+            mock_fetch.assert_called_once_with(year=2026, full_season=True)
+
+            games[0]["home_score"] = "21"
+            status, payload = post({"year": 2026})
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["completed_results_saved"], 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        with sqlite3.connect(bot_server.DB_FILE) as conn:
+            results = conn.execute(
+                "SELECT away_score, home_score FROM game_results WHERE event_id = 'final-1'"
+            ).fetchone()
+            changed_scores = conn.execute(
+                "SELECT away_score, home_score FROM game_result_history WHERE event_id = 'final-1'"
+            ).fetchall()
+            scheduled_count = conn.execute(
+                "SELECT COUNT(*) FROM game_results WHERE event_id = 'scheduled-1'"
+            ).fetchone()[0]
+        self.assertEqual(results, (20, 21))
+        self.assertEqual(changed_scores, [(20, 21)])
+        self.assertEqual(scheduled_count, 0)
+
+    @patch("bot_server.fetch_espn_fallback")
+    def test_results_refresh_rejects_invalid_year_and_reports_feed_failure(self, mock_fetch):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), bot_server.UpgradedRequestHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            connection.request(
+                "POST", "/api/history/refresh", json.dumps({"year": 1999}),
+                {"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
+            connection.close()
+            mock_fetch.assert_not_called()
+
+            mock_fetch.return_value = []
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            connection.request(
+                "POST", "/api/history/refresh", json.dumps({"year": 2026}),
+                {"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, 503)
+            self.assertIn(b"saved results were not changed", response.read())
+            connection.close()
+        finally:
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)

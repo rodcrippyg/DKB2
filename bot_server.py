@@ -323,8 +323,9 @@ def persist_market_snapshots(games: list[dict], observed_at: str | None = None) 
         conn.commit()
 
 
-def save_final_game_results(games: list[dict], observed_at: str | None = None) -> None:
+def save_final_game_results(games: list[dict], observed_at: str | None = None) -> int:
     observed_at = observed_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    saved_count = 0
     with sqlite3.connect(DB_FILE) as conn:
         for game in games:
             if not game.get("completed"):
@@ -341,7 +342,7 @@ def save_final_game_results(games: list[dict], observed_at: str | None = None) -
                 "SELECT away_score, home_score FROM game_results WHERE event_id = ?",
                 (event_id,),
             ).fetchone()
-            if previous is None or previous != (away_score, home_score):
+            if previous is not None and previous != (away_score, home_score):
                 conn.execute("""
                     INSERT INTO game_result_history
                     (event_id, away_score, home_score, source, observed_at)
@@ -360,7 +361,9 @@ def save_final_game_results(games: list[dict], observed_at: str | None = None) -
                 game.get("home", game.get("home_team", "")), away_score, home_score,
                 "ESPN", observed_at,
             ))
+            saved_count += 1
         conn.commit()
+    return saved_count
 
 
 def get_real_player_stat(event_id: str, player_name: str, market_type: str) -> float:
@@ -657,6 +660,41 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"success": True, "game": game}).encode("utf-8"))
+            return
+
+        if parsed.path == "/api/history/refresh":
+            body = self._read_json_body()
+            if body is None:
+                return
+            try:
+                default_year = datetime.now().year - (1 if datetime.now().month < 3 else 0)
+                year = int(body.get("year", default_year))
+                if not 2000 <= year <= 2100:
+                    raise ValueError
+            except (TypeError, ValueError, OverflowError):
+                self.send_error(400, "year must be 2000-2100")
+                return
+
+            games = fetch_espn_fallback(year=year, full_season=True)
+            if not games:
+                self.send_response(503)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "error": "ESPN season results are unavailable; saved results were not changed."
+                }).encode("utf-8"))
+                return
+
+            saved_count = save_final_game_results(games)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "success": True,
+                "season_year": year,
+                "games_fetched": len(games),
+                "completed_results_saved": saved_count,
+            }).encode("utf-8"))
             return
 
         # 1. Place Paper Bet Endpoint
