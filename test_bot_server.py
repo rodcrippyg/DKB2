@@ -112,6 +112,99 @@ class SchedulePersistenceTests(unittest.TestCase):
         self.assertEqual(bot_server.compute_settlement_pnl(20, -110, "PUSH"), (20, 0.0))
         self.assertEqual(bot_server.compute_settlement_pnl(20, 105, "VOID"), (20, 0.0))
 
+    def test_resolves_moneyline_spread_and_total_results(self):
+        cases = [
+            ("Moneyline", "Away Team", "AWAY", 20, 17, "WIN"),
+            ("Moneyline", "Home Team", "HOME", 20, 17, "LOSS"),
+            ("Moneyline", "Away Team", "AWAY", 17, 17, "PUSH"),
+            ("Spread", "Home Team -3", "HOME", 20, 17, "PUSH"),
+            ("Spread", "Away Team +3.5", "AWAY", 20, 17, "WIN"),
+            ("Spread", "Home Team +3.5", "HOME", 20, 17, "WIN"),
+            ("Total", "Over 37", "BOTH", 20, 17, "PUSH"),
+            ("Total", "Under 37.5", "BOTH", 20, 17, "WIN"),
+            ("Total", "Over 38", "BOTH", 20, 17, "LOSS"),
+        ]
+        for market, target, side, away_score, home_score, expected in cases:
+            with self.subTest(market=market, target=target):
+                self.assertEqual(
+                    bot_server.resolve_game_wager_result(
+                        market, target, side, "Away Team", "Home Team", away_score, home_score,
+                    ),
+                    expected,
+                )
+        self.assertIsNone(bot_server.resolve_game_wager_result(
+            "Moneyline", "Away Team", "SHARED", "Away Team", "Home Team", 20, 17,
+        ))
+
+    def test_completed_results_auto_settle_captured_game_markets_and_recalculate_corrections(self):
+        wagers = [
+            ("money-away", "AWAY", "Moneyline", "Away Team", -110, "PENDING", "MANUAL"),
+            ("spread-home", "HOME", "Spread", "Home Team -3", -110, "PENDING", "MANUAL"),
+            ("total-over", "BOTH", "Total", "Over 36.5", -110, "PENDING", "MANUAL"),
+            ("unknown-market", "HOME", "Player Props", "Player over 20.5", -110, "PENDING", "MANUAL"),
+            ("manual-result", "AWAY", "Moneyline", "Away Team", -110, "LOSS", "MANUAL"),
+        ]
+        with sqlite3.connect(bot_server.DB_FILE) as conn:
+            conn.executemany("""
+                INSERT INTO wagers (id, game_id, side, market, target, odds, stake, status, net_pnl, settlement_source)
+                VALUES (?, 'event-1', ?, ?, ?, ?, 10, ?, 0, ?)
+            """, wagers)
+
+        final = {
+            "event_id": "event-1", "away": "Away Team", "home": "Home Team",
+            "away_score": 20, "home_score": 17, "completed": True,
+        }
+        self.assertEqual(bot_server.save_final_game_results([final], "2026-10-01T20:00:00+00:00"), 1)
+        with sqlite3.connect(bot_server.DB_FILE) as conn:
+            first = dict(conn.execute("SELECT id, status FROM wagers").fetchall())
+            first["unknown-market"] = conn.execute(
+                "SELECT status FROM wagers WHERE id = 'unknown-market'"
+            ).fetchone()[0]
+            first["manual-result"] = conn.execute(
+                "SELECT status FROM wagers WHERE id = 'manual-result'"
+            ).fetchone()[0]
+        self.assertEqual(first["money-away"], "WIN")
+        self.assertEqual(first["spread-home"], "PUSH")
+        self.assertEqual(first["total-over"], "WIN")
+        self.assertEqual(first["unknown-market"], "PENDING")
+        self.assertEqual(first["manual-result"], "LOSS")
+
+        final["away_score"] = 16
+        self.assertEqual(bot_server.save_final_game_results([final], "2026-10-02T20:00:00+00:00"), 1)
+        with sqlite3.connect(bot_server.DB_FILE) as conn:
+            current = dict(conn.execute("SELECT id, status FROM wagers").fetchall())
+            current["total_over_pnl"] = conn.execute(
+                "SELECT net_pnl FROM wagers WHERE id = 'total-over'"
+            ).fetchone()[0]
+            auto_history = conn.execute(
+                "SELECT previous_status, new_status, source FROM wager_settlement_history "
+                "WHERE wager_id = 'money-away' ORDER BY id"
+            ).fetchall()
+        self.assertEqual(current["money-away"], "LOSS")
+        self.assertEqual(current["spread-home"], "LOSS")
+        self.assertEqual(current["total-over"], "LOSS")
+        self.assertEqual(current["total_over_pnl"], -10)
+        self.assertEqual(auto_history, [("PENDING", "WIN", "ESPN_AUTO"), ("WIN", "LOSS", "ESPN_AUTO")])
+
+    def test_cancelled_game_voids_open_wagers_but_postponed_game_does_not(self):
+        with sqlite3.connect(bot_server.DB_FILE) as conn:
+            conn.executemany("""
+                INSERT INTO wagers (id, game_id, market, target, odds, stake, status)
+                VALUES (?, ?, 'Moneyline', 'Away Team', -110, 10, 'PENDING')
+            """, [("cancelled-wager", "cancelled-game"), ("postponed-wager", "postponed-game")])
+        bot_server.save_final_game_results([
+            {"event_id": "cancelled-game", "status": "Canceled", "completed": False},
+            {"event_id": "postponed-game", "status": "Postponed", "completed": False},
+        ], "2026-10-01T20:00:00+00:00")
+        with sqlite3.connect(bot_server.DB_FILE) as conn:
+            rows = dict(conn.execute("SELECT id, status FROM wagers").fetchall())
+            void_data = conn.execute(
+                "SELECT payout, net_pnl, settlement_source FROM wagers WHERE id = 'cancelled-wager'"
+            ).fetchone()
+        self.assertEqual(rows["cancelled-wager"], "VOID")
+        self.assertEqual(rows["postponed-wager"], "PENDING")
+        self.assertEqual(void_data, (10, 0, "ESPN_AUTO"))
+
     def test_paper_wager_uses_captured_price_and_corrections_replace_pnl(self):
         game = {
             "event_id": "event-1",

@@ -1,6 +1,7 @@
 import http.server
 import json
 import math
+import re
 import sqlite3
 import socketserver
 import time
@@ -66,6 +67,7 @@ def init_db():
             ("price_source", "TEXT"),
             ("price_observed_at", "TEXT"),
             ("fair_market_prob", "REAL"),
+            ("settlement_source", "TEXT DEFAULT 'MANUAL'"),
         ):
             if column not in wager_columns:
                 cursor.execute(f"ALTER TABLE wagers ADD COLUMN {column} {definition}")
@@ -118,6 +120,9 @@ def init_db():
                 occurred_at TEXT NOT NULL
             )
         """)
+        settlement_columns = {row[1] for row in cursor.execute("PRAGMA table_info(wager_settlement_history)")}
+        if "source" not in settlement_columns:
+            cursor.execute("ALTER TABLE wager_settlement_history ADD COLUMN source TEXT DEFAULT 'MANUAL'")
 
         # 2. Season Schedule Table
         cursor.execute("""
@@ -323,11 +328,132 @@ def persist_market_snapshots(games: list[dict], observed_at: str | None = None) 
         conn.commit()
 
 
+def resolve_game_wager_result(
+    market: str,
+    target: str,
+    side: str,
+    away_team: str,
+    home_team: str,
+    away_score: int,
+    home_score: int,
+) -> str | None:
+    market_name = market.casefold()
+    if "moneyline" in market_name:
+        if side not in ("HOME", "AWAY"):
+            return None
+        if away_score == home_score:
+            return "PUSH"
+        selected_home = side == "HOME"
+        return "WIN" if (home_score > away_score) == selected_home else "LOSS"
+
+    if "spread" in market_name:
+        match = re.fullmatch(r"\s*(.*?)\s+([+-]?\d+(?:\.\d+)?)\s*", target)
+        if not match:
+            return None
+        selection_team = match.group(1).strip().casefold()
+        if selection_team == home_team.casefold():
+            margin = home_score + float(match.group(2)) - away_score
+        elif selection_team == away_team.casefold():
+            margin = away_score + float(match.group(2)) - home_score
+        else:
+            return None
+        if math.isclose(margin, 0.0, abs_tol=1e-9):
+            return "PUSH"
+        return "WIN" if margin > 0 else "LOSS"
+
+    if "total" in market_name:
+        match = re.fullmatch(r"\s*(over|under)\s+(\d+(?:\.\d+)?)\s*", target, re.IGNORECASE)
+        if not match:
+            return None
+        total = away_score + home_score
+        line = float(match.group(2))
+        if math.isclose(total, line, abs_tol=1e-9):
+            return "PUSH"
+        won = total > line if match.group(1).casefold() == "over" else total < line
+        return "WIN" if won else "LOSS"
+    return None
+
+
+def settle_cancelled_game_wagers(
+    conn: sqlite3.Connection,
+    event_id: str,
+    observed_at: str,
+) -> int:
+    wagers = conn.execute("""
+        SELECT id, stake, odds, status, settlement_source
+        FROM wagers WHERE game_id = ?
+    """, (event_id,)).fetchall()
+    settled = 0
+    for wager_id, stake, odds, status, source in wagers:
+        if status != "PENDING" and source != "ESPN_AUTO":
+            continue
+        if status == "VOID":
+            continue
+        payout, net_pnl = compute_settlement_pnl(stake, odds, "VOID")
+        conn.execute("""
+            UPDATE wagers SET status = 'VOID', payout = ?, net_pnl = ?, settlement_source = 'ESPN_AUTO'
+            WHERE id = ?
+        """, (payout, net_pnl, wager_id))
+        conn.execute("""
+            INSERT INTO wager_settlement_history
+            (wager_id, previous_status, new_status, payout, net_pnl, occurred_at, source)
+            VALUES (?, ?, 'VOID', ?, ?, ?, 'ESPN_AUTO')
+        """, (wager_id, status, payout, net_pnl, observed_at))
+        settled += 1
+    return settled
+
+
+def settle_completed_game_wagers(
+    conn: sqlite3.Connection,
+    game: dict,
+    observed_at: str,
+) -> int:
+    event_id = str(game.get("event_id", ""))
+    try:
+        away_score = int(game["away_score"])
+        home_score = int(game["home_score"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return 0
+    away_team = game.get("away", game.get("away_team", ""))
+    home_team = game.get("home", game.get("home_team", ""))
+    wagers = conn.execute("""
+        SELECT id, side, market, target, odds, stake, status, settlement_source
+        FROM wagers WHERE game_id = ?
+    """, (event_id,)).fetchall()
+    settled = 0
+    for wager in wagers:
+        wager_id, side, market, target, odds, stake, status, source = wager
+        if status != "PENDING" and source != "ESPN_AUTO":
+            continue
+        result = resolve_game_wager_result(
+            market, target, side, away_team, home_team, away_score, home_score,
+        )
+        if result is None:
+            continue
+        payout, net_pnl = compute_settlement_pnl(stake, odds, result)
+        if status == result:
+            continue
+        conn.execute("""
+            UPDATE wagers SET status = ?, payout = ?, net_pnl = ?, settlement_source = 'ESPN_AUTO'
+            WHERE id = ?
+        """, (result, payout, net_pnl, wager_id))
+        conn.execute("""
+            INSERT INTO wager_settlement_history
+            (wager_id, previous_status, new_status, payout, net_pnl, occurred_at, source)
+            VALUES (?, ?, ?, ?, ?, ?, 'ESPN_AUTO')
+        """, (wager_id, status, result, payout, net_pnl, observed_at))
+        settled += 1
+    return settled
+
+
 def save_final_game_results(games: list[dict], observed_at: str | None = None) -> int:
     observed_at = observed_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
     saved_count = 0
     with sqlite3.connect(DB_FILE) as conn:
         for game in games:
+            event_id = str(game.get("event_id", ""))
+            if event_id and str(game.get("status", "")).casefold() in ("canceled", "cancelled"):
+                settle_cancelled_game_wagers(conn, event_id, observed_at)
             if not game.get("completed"):
                 continue
             try:
@@ -335,7 +461,6 @@ def save_final_game_results(games: list[dict], observed_at: str | None = None) -
                 home_score = int(game["home_score"])
             except (KeyError, TypeError, ValueError, OverflowError):
                 continue
-            event_id = str(game.get("event_id", ""))
             if not event_id:
                 continue
             previous = conn.execute(
@@ -361,6 +486,7 @@ def save_final_game_results(games: list[dict], observed_at: str | None = None) -
                 game.get("home", game.get("home_team", "")), away_score, home_score,
                 "ESPN", observed_at,
             ))
+            settle_completed_game_wagers(conn, game, observed_at)
             saved_count += 1
         conn.commit()
     return saved_count
@@ -605,7 +731,7 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
             with sqlite3.connect(DB_FILE) as conn:
                 conn.row_factory = sqlite3.Row
                 items = [dict(row) for row in conn.execute("""
-                    SELECT id, wager_id, previous_status, new_status, payout, net_pnl, occurred_at
+                    SELECT id, wager_id, previous_status, new_status, payout, net_pnl, occurred_at, source
                     FROM wager_settlement_history ORDER BY occurred_at DESC, id DESC LIMIT 500
                 """)]
             self.send_response(200)
@@ -796,13 +922,13 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
                 payout, net_pnl = compute_settlement_pnl(stake, odds, result)
                 cursor.execute("""
                     UPDATE wagers
-                    SET status = ?, payout = ?, net_pnl = ?
+                    SET status = ?, payout = ?, net_pnl = ?, settlement_source = 'MANUAL'
                     WHERE id = ?
                 """, (result, payout, net_pnl, wager_id))
                 cursor.execute("""
                     INSERT INTO wager_settlement_history
-                    (wager_id, previous_status, new_status, payout, net_pnl, occurred_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (wager_id, previous_status, new_status, payout, net_pnl, occurred_at, source)
+                    VALUES (?, ?, ?, ?, ?, ?, 'MANUAL')
                 """, (
                     wager_id, previous_status, result, payout, net_pnl,
                     datetime.now(timezone.utc).isoformat(timespec="seconds"),
