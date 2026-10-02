@@ -736,6 +736,7 @@
             </div>
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
                 <button class="btn-export" id="refreshResultsButton" onclick="refreshFinalResults()">↻ Refresh final results</button>
+                <button class="btn-export" id="refreshPlayerStatsButton" onclick="refreshPlayerStats()">↻ Collect player stats</button>
                 <button class="btn-export" onclick="exportCsv()">↓ Export PnL CSV</button>
             </div>
         </div>
@@ -1074,6 +1075,26 @@
                 if (!response.ok) throw new Error(result.error || `Refresh failed (${response.status})`);
                 document.getElementById("tickerMessage").textContent =
                     `Season ${result.season_year}: refreshed ${result.completed_results_saved} completed results and saved ${result.team_feature_rows_saved} pregame team-stat rows from ${result.games_fetched} ESPN games.`;
+            } catch (error) {
+                document.getElementById("tickerMessage").textContent = error.message;
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        async function refreshPlayerStats() {
+            const button = document.getElementById("refreshPlayerStatsButton");
+            button.disabled = true;
+            try {
+                const response = await fetch("/api/history/player-stats/refresh", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ limit: 10 })
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || `Refresh failed (${response.status})`);
+                document.getElementById("tickerMessage").textContent =
+                    `Season ${result.season_year}: collected player stats for ${result.events_succeeded}/${result.events_attempted} games (${result.stat_rows_saved} stat rows); ${result.events_failed} failed and ${result.remaining_events} remain. ESPN observations are not confirmed publication times; no model edge is claimed.`;
             } catch (error) {
                 document.getElementById("tickerMessage").textContent = error.message;
             } finally {

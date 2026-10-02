@@ -145,6 +145,50 @@ def init_db():
             )
         """)
         cursor.execute("""
+            CREATE TABLE IF NOT EXISTS player_game_stats (
+                event_id TEXT NOT NULL,
+                player_key TEXT NOT NULL,
+                player_id TEXT,
+                player_name TEXT NOT NULL,
+                team_id TEXT,
+                team_name TEXT,
+                category TEXT NOT NULL,
+                stat_key TEXT NOT NULL,
+                stat_label TEXT,
+                raw_value TEXT NOT NULL,
+                numeric_value REAL,
+                source TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                PRIMARY KEY (event_id, player_key, category, stat_key)
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_player_game_stats_player
+            ON player_game_stats(player_key, event_id)
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS player_game_stat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL,
+                player_key TEXT NOT NULL,
+                category TEXT NOT NULL,
+                stat_key TEXT NOT NULL,
+                previous_raw_value TEXT NOT NULL,
+                new_raw_value TEXT NOT NULL,
+                source TEXT NOT NULL,
+                observed_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS player_stats_sync (
+                event_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                rows_saved INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                observed_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS wager_settlement_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 wager_id TEXT NOT NULL,
@@ -535,6 +579,216 @@ def save_final_game_results(games: list[dict], observed_at: str | None = None) -
             saved_count += 1
         conn.commit()
     return saved_count
+
+
+def parse_espn_player_game_stats(payload: dict) -> list[dict] | None:
+    boxscore = payload.get("boxscore") if isinstance(payload, dict) else None
+    team_boxes = boxscore.get("players") if isinstance(boxscore, dict) else None
+    if not isinstance(team_boxes, list):
+        return None
+
+    parsed_stats = []
+    for team_box in team_boxes:
+        if not isinstance(team_box, dict):
+            continue
+        team = team_box.get("team") or {}
+        team_id = str(team.get("id", "")) or None if isinstance(team, dict) else None
+        team_name = (
+            team.get("displayName") or team.get("name")
+            if isinstance(team, dict) else None
+        )
+        for category in team_box.get("statistics", []):
+            if not isinstance(category, dict):
+                continue
+            category_name = str(category.get("name", "")).strip()
+            if not category_name:
+                continue
+            keys = category.get("keys", [])
+            labels = category.get("labels", [])
+            athletes = category.get("athletes", [])
+            if not isinstance(keys, list):
+                keys = []
+            if not isinstance(labels, list):
+                labels = []
+            if not isinstance(athletes, list):
+                continue
+            for athlete_stats in athletes:
+                if not isinstance(athlete_stats, dict):
+                    continue
+                athlete = athlete_stats.get("athlete") or {}
+                if not isinstance(athlete, dict):
+                    continue
+                player_name = str(athlete.get("displayName") or athlete.get("fullName") or "").strip()
+                if not player_name:
+                    continue
+                player_id = str(athlete.get("id", "")).strip() or None
+                player_key = player_id or f"name:{player_name.casefold()}"
+                values = athlete_stats.get("stats", [])
+                if not isinstance(values, list):
+                    continue
+                for index, value in enumerate(values):
+                    if value is None:
+                        continue
+                    stat_key = str(keys[index]).strip() if index < len(keys) else ""
+                    stat_label = str(labels[index]).strip() if index < len(labels) else ""
+                    stat_key = stat_key or stat_label
+                    if not stat_key:
+                        continue
+                    raw_value = str(value).strip()
+                    if not raw_value:
+                        continue
+                    try:
+                        numeric_value = float(raw_value.replace(",", ""))
+                        if not math.isfinite(numeric_value):
+                            numeric_value = None
+                    except (TypeError, ValueError, OverflowError):
+                        numeric_value = None
+                    parsed_stats.append({
+                        "player_key": player_key,
+                        "player_id": player_id,
+                        "player_name": player_name,
+                        "team_id": team_id,
+                        "team_name": team_name,
+                        "category": category_name,
+                        "stat_key": stat_key,
+                        "stat_label": stat_label or stat_key,
+                        "raw_value": raw_value,
+                        "numeric_value": numeric_value,
+                    })
+    return parsed_stats
+
+
+def fetch_espn_player_game_stats(event_id: str) -> list[dict] | None:
+    try:
+        response = requests.get(
+            ESPN_SUMMARY_BASE,
+            params={"event": str(event_id)},
+            headers=HEADERS,
+            timeout=6,
+        )
+        if response.status_code != 200:
+            return None
+        return parse_espn_player_game_stats(response.json())
+    except Exception as error:
+        print(f"[!] ESPN player stats unavailable for event {event_id}: {error}")
+        return None
+
+
+def save_player_game_stats(
+    event_id: str,
+    stats: list[dict],
+    observed_at: str | None = None,
+) -> int:
+    observed_at = observed_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        timestamp = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            raise ValueError
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError("observed_at must be a timezone-aware timestamp")
+    rows_saved = 0
+    with sqlite3.connect(DB_FILE) as conn:
+        for stat in stats:
+            required = (
+                "player_key", "player_name", "category", "stat_key", "raw_value",
+            )
+            if not all(stat.get(field) for field in required):
+                continue
+            identity = (
+                event_id, stat["player_key"], stat["category"], stat["stat_key"],
+            )
+            previous = conn.execute("""
+                SELECT raw_value FROM player_game_stats
+                WHERE event_id = ? AND player_key = ? AND category = ? AND stat_key = ?
+            """, identity).fetchone()
+            raw_value = str(stat["raw_value"])
+            if previous is not None and previous[0] != raw_value:
+                conn.execute("""
+                    INSERT INTO player_game_stat_history
+                    (event_id, player_key, category, stat_key, previous_raw_value,
+                     new_raw_value, source, observed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'ESPN summary', ?)
+                """, (*identity, previous[0], raw_value, observed_at))
+            conn.execute("""
+                INSERT INTO player_game_stats
+                (event_id, player_key, player_id, player_name, team_id, team_name,
+                 category, stat_key, stat_label, raw_value, numeric_value, source, observed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ESPN summary', ?)
+                ON CONFLICT(event_id, player_key, category, stat_key) DO UPDATE SET
+                    player_id = excluded.player_id,
+                    player_name = excluded.player_name,
+                    team_id = excluded.team_id,
+                    team_name = excluded.team_name,
+                    stat_label = excluded.stat_label,
+                    raw_value = excluded.raw_value,
+                    numeric_value = excluded.numeric_value,
+                    source = excluded.source,
+                    observed_at = CASE
+                        WHEN player_game_stats.raw_value != excluded.raw_value
+                             OR player_game_stats.numeric_value IS NOT excluded.numeric_value
+                        THEN excluded.observed_at ELSE player_game_stats.observed_at
+                    END
+            """, (
+                event_id, stat["player_key"], stat.get("player_id"), stat["player_name"],
+                stat.get("team_id"), stat.get("team_name"), stat["category"],
+                stat["stat_key"], stat.get("stat_label") or stat["stat_key"], raw_value,
+                stat.get("numeric_value"), observed_at,
+            ))
+            rows_saved += 1
+        conn.execute("""
+            INSERT INTO player_stats_sync (event_id, status, rows_saved, error, observed_at)
+            VALUES (?, 'SUCCESS', ?, NULL, ?)
+            ON CONFLICT(event_id) DO UPDATE SET status = 'SUCCESS',
+                rows_saved = excluded.rows_saved, error = NULL, observed_at = excluded.observed_at
+        """, (event_id, rows_saved, observed_at))
+        conn.commit()
+    return rows_saved
+
+
+def refresh_player_game_stats(season_year: int, limit: int = 10) -> dict:
+    if not 1 <= limit <= 25:
+        raise ValueError("limit must be between 1 and 25")
+    with sqlite3.connect(DB_FILE) as conn:
+        pending_events = conn.execute("""
+            SELECT r.event_id
+            FROM game_results r
+            LEFT JOIN player_stats_sync s ON s.event_id = r.event_id
+            WHERE r.season_year = ? AND (s.status IS NULL OR s.status != 'SUCCESS')
+            ORDER BY r.kickoff_utc, r.event_id
+            LIMIT ?
+        """, (season_year, limit)).fetchall()
+        remaining = conn.execute("""
+            SELECT COUNT(*)
+            FROM game_results r
+            LEFT JOIN player_stats_sync s ON s.event_id = r.event_id
+            WHERE r.season_year = ? AND (s.status IS NULL OR s.status != 'SUCCESS')
+        """, (season_year,)).fetchone()[0]
+
+    rows_saved = 0
+    failures = 0
+    for (event_id,) in pending_events:
+        stats = fetch_espn_player_game_stats(event_id)
+        observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if stats is None:
+            failures += 1
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.execute("""
+                    INSERT INTO player_stats_sync (event_id, status, rows_saved, error, observed_at)
+                    VALUES (?, 'FAILED', 0, 'ESPN summary unavailable or malformed', ?)
+                    ON CONFLICT(event_id) DO UPDATE SET status = 'FAILED',
+                        error = excluded.error, observed_at = excluded.observed_at
+                """, (event_id, observed_at))
+                conn.commit()
+            continue
+        rows_saved += save_player_game_stats(event_id, stats, observed_at)
+
+    return {
+        "events_attempted": len(pending_events),
+        "events_succeeded": len(pending_events) - failures,
+        "events_failed": failures,
+        "stat_rows_saved": rows_saved,
+        "remaining_events": max(remaining - len(pending_events), 0) + failures,
+    }
 
 
 def _parse_utc_datetime(value: str) -> datetime | None:
@@ -1000,6 +1254,93 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps(items).encode("utf-8"))
             return
 
+        elif parsed.path == "/api/history/player-stats":
+            query_params = urllib.parse.parse_qs(parsed.query)
+            event_id = query_params.get("event_id", [None])[0]
+            player = query_params.get("player", [None])[0]
+            season = query_params.get("year", [None])[0]
+            if (event_id and len(event_id) > 80) or (player and len(player) > 100):
+                self.send_error(400, "event_id or player filter is too long")
+                return
+            filters = []
+            params = []
+            if event_id:
+                filters.append("s.event_id = ?")
+                params.append(event_id)
+            if player:
+                filters.append("instr(lower(s.player_name), lower(?)) > 0")
+                params.append(player)
+            if season:
+                try:
+                    season_year = int(season)
+                    if not 2000 <= season_year <= 2100:
+                        raise ValueError
+                except (TypeError, ValueError, OverflowError):
+                    self.send_error(400, "year must be 2000-2100")
+                    return
+                filters.append("r.season_year = ?")
+                params.append(season_year)
+            query = """
+                SELECT s.event_id, r.season_year, r.week, r.kickoff_utc,
+                       s.player_id, s.player_name, s.team_id, s.team_name,
+                       s.category, s.stat_key, s.stat_label, s.raw_value,
+                       s.numeric_value, s.source, s.observed_at
+                FROM player_game_stats s
+                LEFT JOIN game_results r ON r.event_id = s.event_id
+            """
+            if filters:
+                query += " WHERE " + " AND ".join(filters)
+            query += " ORDER BY r.kickoff_utc DESC, s.player_name, s.category, s.stat_key LIMIT 2000"
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.row_factory = sqlite3.Row
+                items = [dict(row) for row in conn.execute(query, params)]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(items).encode("utf-8"))
+            return
+
+        elif parsed.path == "/api/history/player-stats/status":
+            query_params = urllib.parse.parse_qs(parsed.query)
+            try:
+                default_year = datetime.now().year - (1 if datetime.now().month < 3 else 0)
+                season_year = int(query_params.get("year", [str(default_year)])[0])
+                if not 2000 <= season_year <= 2100:
+                    raise ValueError
+            except (TypeError, ValueError, OverflowError):
+                self.send_error(400, "year must be 2000-2100")
+                return
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.row_factory = sqlite3.Row
+                counts = conn.execute("""
+                    SELECT COUNT(*) AS completed_events,
+                           SUM(CASE WHEN s.status = 'SUCCESS' THEN 1 ELSE 0 END) AS succeeded_events,
+                           SUM(CASE WHEN s.status = 'FAILED' THEN 1 ELSE 0 END) AS failed_events,
+                           SUM(CASE WHEN s.status IS NULL OR s.status != 'SUCCESS' THEN 1 ELSE 0 END)
+                               AS pending_events,
+                           COALESCE(SUM(CASE WHEN s.status = 'SUCCESS' THEN s.rows_saved ELSE 0 END), 0)
+                               AS stat_rows
+                    FROM game_results r
+                    LEFT JOIN player_stats_sync s ON s.event_id = r.event_id
+                    WHERE r.season_year = ?
+                """, (season_year,)).fetchone()
+                recent = [dict(row) for row in conn.execute("""
+                    SELECT s.event_id, s.status, s.rows_saved, s.error, s.observed_at
+                    FROM player_stats_sync s JOIN game_results r ON r.event_id = s.event_id
+                    WHERE r.season_year = ? ORDER BY s.observed_at DESC LIMIT 50
+                """, (season_year,))]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "season_year": season_year,
+                "counts": dict(counts),
+                "recent_syncs": recent,
+                "source": "ESPN per-event summary",
+                "model_status": "NOT_VALIDATED",
+            }).encode("utf-8"))
+            return
+
         elif parsed.path == "/api/history/team-features":
             query_params = urllib.parse.parse_qs(parsed.query)
             event_id = query_params.get("event_id", [None])[0]
@@ -1145,6 +1486,46 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "games_fetched": len(games),
                 "completed_results_saved": saved_count,
                 "team_feature_rows_saved": feature_count,
+            }).encode("utf-8"))
+            return
+
+        if parsed.path == "/api/history/player-stats/refresh":
+            body = self._read_json_body()
+            if body is None:
+                return
+            try:
+                default_year = datetime.now().year - (1 if datetime.now().month < 3 else 0)
+                year = int(body.get("year", default_year))
+                limit = int(body.get("limit", 10))
+                if not 2000 <= year <= 2100 or not 1 <= limit <= 25:
+                    raise ValueError
+            except (TypeError, ValueError, OverflowError):
+                self.send_error(400, "year must be 2000-2100 and limit must be 1-25")
+                return
+
+            games = fetch_espn_fallback(year=year, full_season=True)
+            if not games:
+                self.send_response(503)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "error": "ESPN season schedule is unavailable; player stats were not refreshed."
+                }).encode("utf-8"))
+                return
+
+            results_saved = save_final_game_results(games)
+            sync = refresh_player_game_stats(year, limit)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "success": True,
+                "season_year": year,
+                "games_fetched": len(games),
+                "completed_results_saved": results_saved,
+                **sync,
+                "source": "ESPN per-event summary",
+                "model_status": "NOT_VALIDATED",
             }).encode("utf-8"))
             return
 

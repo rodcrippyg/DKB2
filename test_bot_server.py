@@ -118,6 +118,100 @@ class SchedulePersistenceTests(unittest.TestCase):
         ))
         self.assertEqual(history_count, 1)
 
+    def test_espn_player_stat_parser_preserves_raw_and_numeric_values(self):
+        payload = {
+            "boxscore": {
+                "players": [{
+                    "team": {"id": "12", "displayName": "Seattle Seahawks"},
+                    "statistics": [{
+                        "name": "passing",
+                        "keys": ["completions/passingAttempts", "passingYards", "interceptions"],
+                        "labels": ["C/ATT", "YDS", "INT"],
+                        "athletes": [{
+                            "athlete": {"id": "99", "displayName": "Example Player"},
+                            "stats": ["18/27", "245", "1"],
+                        }],
+                    }],
+                }],
+            },
+        }
+
+        stats = bot_server.parse_espn_player_game_stats(payload)
+
+        self.assertEqual(len(stats), 3)
+        self.assertEqual(stats[0]["player_key"], "99")
+        self.assertEqual(stats[0]["team_name"], "Seattle Seahawks")
+        self.assertEqual(stats[0]["category"], "passing")
+        self.assertEqual(stats[0]["stat_key"], "completions/passingAttempts")
+        self.assertEqual(stats[0]["raw_value"], "18/27")
+        self.assertIsNone(stats[0]["numeric_value"])
+        self.assertEqual(stats[1]["numeric_value"], 245.0)
+        self.assertEqual(stats[2]["numeric_value"], 1.0)
+        self.assertIsNone(bot_server.parse_espn_player_game_stats({}))
+
+    def test_player_game_stats_are_idempotent_and_keep_correction_history(self):
+        stat = {
+            "player_key": "99", "player_id": "99", "player_name": "Example Player",
+            "team_id": "12", "team_name": "Seattle Seahawks", "category": "passing",
+            "stat_key": "passingYards", "stat_label": "YDS", "raw_value": "245",
+            "numeric_value": 245.0,
+        }
+        bot_server.save_player_game_stats("event-player", [stat], "2026-10-01T20:00:00+00:00")
+        bot_server.save_player_game_stats("event-player", [stat], "2026-10-01T21:00:00+00:00")
+        corrected = {**stat, "raw_value": "246", "numeric_value": 246.0}
+        bot_server.save_player_game_stats("event-player", [corrected], "2026-10-02T20:00:00+00:00")
+
+        with sqlite3.connect(bot_server.DB_FILE) as conn:
+            saved = conn.execute("""
+                SELECT raw_value, numeric_value, observed_at
+                FROM player_game_stats WHERE event_id = 'event-player'
+            """).fetchone()
+            history = conn.execute("""
+                SELECT previous_raw_value, new_raw_value, observed_at
+                FROM player_game_stat_history WHERE event_id = 'event-player'
+            """).fetchall()
+            sync = conn.execute("""
+                SELECT status, rows_saved FROM player_stats_sync WHERE event_id = 'event-player'
+            """).fetchone()
+        self.assertEqual(saved, ("246", 246.0, "2026-10-02T20:00:00+00:00"))
+        self.assertEqual(history, [("245", "246", "2026-10-02T20:00:00+00:00")])
+        self.assertEqual(sync, ("SUCCESS", 1))
+
+    def test_player_stats_refresh_is_bounded_retries_failures_and_skips_successes(self):
+        games = [
+            {
+                "event_id": "player-event-1", "season_year": 2026, "week": 1,
+                "kickoff_utc": "2026-09-01T17:00:00Z", "away": "Away", "home": "Home",
+                "away_score": 20, "home_score": 17, "completed": True,
+            },
+            {
+                "event_id": "player-event-2", "season_year": 2026, "week": 2,
+                "kickoff_utc": "2026-09-08T17:00:00Z", "away": "Away", "home": "Home",
+                "away_score": 24, "home_score": 21, "completed": True,
+            },
+        ]
+        bot_server.save_final_game_results(games)
+        stat = {
+            "player_key": "99", "player_name": "Example Player", "category": "passing",
+            "stat_key": "passingYards", "raw_value": "245", "numeric_value": 245.0,
+        }
+        with patch.object(bot_server, "fetch_espn_player_game_stats", return_value=[stat]) as fetch_stats:
+            first_batch = bot_server.refresh_player_game_stats(2026, 1)
+        self.assertEqual(first_batch, {
+            "events_attempted": 1, "events_succeeded": 1, "events_failed": 0,
+            "stat_rows_saved": 1, "remaining_events": 1,
+        })
+        fetch_stats.assert_called_once_with("player-event-1")
+
+        with patch.object(bot_server, "fetch_espn_player_game_stats", return_value=None) as fetch_stats:
+            failed_batch = bot_server.refresh_player_game_stats(2026, 10)
+        self.assertEqual(failed_batch["events_attempted"], 1)
+        self.assertEqual(failed_batch["events_failed"], 1)
+        self.assertEqual(failed_batch["remaining_events"], 1)
+        fetch_stats.assert_called_once_with("player-event-2")
+        with self.assertRaises(ValueError):
+            bot_server.refresh_player_game_stats(2026, 26)
+
     def test_pregame_team_features_use_only_prior_completed_games(self):
         prior_games = [
             {
