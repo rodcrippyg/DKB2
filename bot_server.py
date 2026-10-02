@@ -655,7 +655,7 @@ def parse_espn_player_game_stats(payload: dict) -> list[dict] | None:
                         "raw_value": raw_value,
                         "numeric_value": numeric_value,
                     })
-    return parsed_stats
+    return parsed_stats or None
 
 
 def fetch_espn_player_game_stats(event_id: str) -> list[dict] | None:
@@ -1314,9 +1314,11 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
                 conn.row_factory = sqlite3.Row
                 counts = conn.execute("""
                     SELECT COUNT(*) AS completed_events,
-                           SUM(CASE WHEN s.status = 'SUCCESS' THEN 1 ELSE 0 END) AS succeeded_events,
-                           SUM(CASE WHEN s.status = 'FAILED' THEN 1 ELSE 0 END) AS failed_events,
-                           SUM(CASE WHEN s.status IS NULL OR s.status != 'SUCCESS' THEN 1 ELSE 0 END)
+                           COALESCE(SUM(CASE WHEN s.status = 'SUCCESS' THEN 1 ELSE 0 END), 0)
+                               AS succeeded_events,
+                           COALESCE(SUM(CASE WHEN s.status = 'FAILED' THEN 1 ELSE 0 END), 0)
+                               AS failed_events,
+                           COALESCE(SUM(CASE WHEN s.status IS NULL OR s.status != 'SUCCESS' THEN 1 ELSE 0 END), 0)
                                AS pending_events,
                            COALESCE(SUM(CASE WHEN s.status = 'SUCCESS' THEN s.rows_saved ELSE 0 END), 0)
                                AS stat_rows

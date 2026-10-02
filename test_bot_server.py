@@ -212,6 +212,60 @@ class SchedulePersistenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bot_server.refresh_player_game_stats(2026, 26)
 
+    def test_player_stats_refresh_and_history_apis_persist_real_source_rows(self):
+        game = {
+            "event_id": "player-api-event", "season_year": 2026, "week": 1,
+            "kickoff_utc": "2026-09-01T17:00:00Z", "away": "Away", "home": "Home",
+            "away_score": 20, "home_score": 17, "completed": True,
+        }
+        stat = {
+            "player_key": "99", "player_id": "99", "player_name": "Example Player",
+            "team_id": "12", "team_name": "Away", "category": "passing",
+            "stat_key": "passingYards", "stat_label": "YDS", "raw_value": "245",
+            "numeric_value": 245.0,
+        }
+        server = ThreadingHTTPServer(("127.0.0.1", 0), bot_server.UpgradedRequestHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with patch.object(bot_server, "fetch_espn_fallback", return_value=[game]), \
+                    patch.object(bot_server, "fetch_espn_player_game_stats", return_value=[stat]):
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+                connection.request(
+                    "POST", "/api/history/player-stats/refresh",
+                    body=json.dumps({"year": 2026, "limit": 1}),
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                refresh = json.loads(response.read())
+                connection.close()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(refresh["events_succeeded"], 1)
+            self.assertEqual(refresh["stat_rows_saved"], 1)
+
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            connection.request("GET", "/api/history/player-stats?year=2026&player=Example")
+            response = connection.getresponse()
+            rows = json.loads(response.read())
+            connection.close()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(rows[0]["event_id"], "player-api-event")
+            self.assertEqual(rows[0]["numeric_value"], 245.0)
+            self.assertEqual(rows[0]["source"], "ESPN summary")
+
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            connection.request("GET", "/api/history/player-stats/status?year=2026")
+            response = connection.getresponse()
+            status = json.loads(response.read())
+            connection.close()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(status["counts"]["succeeded_events"], 1)
+            self.assertEqual(status["counts"]["pending_events"], 0)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_pregame_team_features_use_only_prior_completed_games(self):
         prior_games = [
             {
