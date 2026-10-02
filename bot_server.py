@@ -97,6 +97,27 @@ def init_db():
                 observed_at TEXT NOT NULL
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS game_result_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL,
+                away_score INTEGER NOT NULL,
+                home_score INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                observed_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS wager_settlement_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                wager_id TEXT NOT NULL,
+                previous_status TEXT NOT NULL,
+                new_status TEXT NOT NULL,
+                payout REAL NOT NULL,
+                net_pnl REAL NOT NULL,
+                occurred_at TEXT NOT NULL
+            )
+        """)
 
         # 2. Season Schedule Table
         cursor.execute("""
@@ -316,6 +337,16 @@ def save_final_game_results(games: list[dict], observed_at: str | None = None) -
             event_id = str(game.get("event_id", ""))
             if not event_id:
                 continue
+            previous = conn.execute(
+                "SELECT away_score, home_score FROM game_results WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+            if previous is None or previous != (away_score, home_score):
+                conn.execute("""
+                    INSERT INTO game_result_history
+                    (event_id, away_score, home_score, source, observed_at)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (event_id, away_score, home_score, "ESPN", observed_at))
             conn.execute("""
                 INSERT INTO game_results
                 (event_id, away_team, home_team, away_score, home_score, source, observed_at)
@@ -627,7 +658,7 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
             with sqlite3.connect(DB_FILE) as conn:
                 cursor = conn.cursor()
                 snapshot = cursor.execute("""
-                    SELECT event_id, market, target, odds, source, observed_at, fair_market_prob
+                    SELECT event_id, market, target, odds, source, observed_at, fair_market_prob, side
                     FROM market_snapshots WHERE id = ?
                 """, (snapshot_id,)).fetchone()
                 if not snapshot:
@@ -644,10 +675,12 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
                 if age_seconds < 0 or age_seconds > 600:
                     self.send_error(409, "Market price is stale; refresh live markets before recording a paper wager")
                     return
+                snapshot_side = "SHARED" if snapshot[7] == "BOTH" else snapshot[7]
                 if (str(body.get("game_id", "")) != snapshot[0]
                         or str(body.get("market", "")) != snapshot[1]
                         or str(body.get("target", "")) != snapshot[2]
-                        or odds != snapshot[3]):
+                        or odds != snapshot[3]
+                        or body.get("side") != snapshot_side):
                     self.send_error(400, "Wager details do not match the saved market snapshot")
                     return
                 cursor.execute("""
@@ -657,7 +690,7 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0.0, 0.0, ?, ?, ?, ?, ?)
                 """, (
                     wager_id, week, body.get("game_id", ""), body.get("matchup", ""),
-                    body.get("side", ""), snapshot[1], snapshot[2],
+                    snapshot_side, snapshot[1], snapshot[2],
                     odds, edge, tier, stake, body.get("strategy_mode", "TIERED"),
                     snapshot_id, snapshot[4], snapshot[5], snapshot[6],
                 ))
@@ -690,18 +723,26 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
 
             with sqlite3.connect(DB_FILE) as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT stake, odds FROM wagers WHERE id = ?", (wager_id,))
+                cursor.execute("SELECT stake, odds, status FROM wagers WHERE id = ?", (wager_id,))
                 row = cursor.fetchone()
                 if not row:
                     self.send_error(404, "Wager does not exist")
                     return
-                stake, odds = row[0], row[1]
+                stake, odds, previous_status = row
                 payout, net_pnl = compute_settlement_pnl(stake, odds, result)
                 cursor.execute("""
                     UPDATE wagers
                     SET status = ?, payout = ?, net_pnl = ?
                     WHERE id = ?
                 """, (result, payout, net_pnl, wager_id))
+                cursor.execute("""
+                    INSERT INTO wager_settlement_history
+                    (wager_id, previous_status, new_status, payout, net_pnl, occurred_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    wager_id, previous_status, result, payout, net_pnl,
+                    datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                ))
                 conn.commit()
 
             stats = calculate_actual_ledger_stats()

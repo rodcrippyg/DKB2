@@ -1056,6 +1056,11 @@
             await refreshLedger();
         }
 
+        function settlementButtons(wagerId) {
+            const safeWagerId = escapeHtml(JSON.stringify(String(wagerId)));
+            return `<div style="display:flex; flex-wrap:wrap; gap:6px;"><button class="btn-win-settle" onclick="settleWager(${safeWagerId}, 'WIN')">✓ Win</button><button class="btn-loss-settle" onclick="settleWager(${safeWagerId}, 'LOSS')">✕ Loss</button><button class="btn-loss-settle" onclick="settleWager(${safeWagerId}, 'PUSH')">Push</button><button class="btn-loss-settle" onclick="settleWager(${safeWagerId}, 'VOID')">Void</button></div>`;
+        }
+
         async function refreshLedger() {
             const [performanceResponse, wagersResponse] = await Promise.all([
                 fetch("/api/ledger/performance"),
@@ -1146,10 +1151,10 @@
                     const pnl = Number(wager.pnl || 0);
                     const pnlLabel = wager.status === "PENDING" ? "Pending" : `${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
                     const settlementControls = wager.status === "PENDING"
-                        ? `<div style="display:flex; flex-wrap:wrap; gap:6px;"><button class="btn-win-settle" onclick="settleWager('${escapeHtml(wager.id)}', 'WIN')">✓ Win</button><button class="btn-loss-settle" onclick="settleWager('${escapeHtml(wager.id)}', 'LOSS')">✕ Loss</button><button class="btn-loss-settle" onclick="settleWager('${escapeHtml(wager.id)}', 'PUSH')">Push</button><button class="btn-loss-settle" onclick="settleWager('${escapeHtml(wager.id)}', 'VOID')">Void</button></div>`
-                        : `<strong>${pnlLabel}</strong>`;
+                        ? settlementButtons(wager.id)
+                        : `<div><strong>${pnlLabel}</strong> · Correct result: ${settlementButtons(wager.id)}</div>`;
                     card.innerHTML = `
-                        <div class="card-top"><div class="tags-row"><span class="badge badge-blue">${statusLabel}</span><span class="badge badge-dark">${escapeHtml(wager.matchup || "")}</span></div><div class="pricing-block"><div class="odds-val">${Number(wager.oddsNum) > 0 ? "+" : ""}${Number(wager.oddsNum)}</div><div class="fair-prob">${wager.fairProb == null ? "Market baseline unavailable" : `No-vig market: ${(Number(wager.fairProb) * 100).toFixed(1)}%`}</div></div></div>
+                        <div class="card-top"><div class="tags-row"><span class="badge badge-blue">${statusLabel}</span><span class="badge badge-dark">${escapeHtml(wager.matchup || "")}</span></div><div class="pricing-block"><div class="odds-val">${Number(wager.oddsNum) > 0 ? "+" : ""}${Number(wager.oddsNum)}</div><div class="fair-prob">${wager.fairProb == null ? "Market baseline unavailable" : `No-vig market: ${(Number(wager.fairProb) * 100).toFixed(1)}%`}</div><div class="fair-prob">${escapeHtml(wager.priceSource || "Unknown source")} · ${escapeHtml(wager.priceObservedAt || "timestamp unavailable")}</div></div></div>
                         <div class="wager-title-row"><span class="target-name">${escapeHtml(wager.target)}</span></div>
                         <div class="card-action-row"><span>Stake: $${Number(wager.stake).toFixed(2)}</span>${settlementControls}</div>
                     `;
@@ -1213,6 +1218,8 @@
             const isPending = wagerState && wagerState.status === 'PENDING';
             const isWin = wagerState && wagerState.status === 'WIN';
             const isLoss = wagerState && wagerState.status === 'LOSS';
+            const isPush = wagerState && wagerState.status === 'PUSH';
+            const isVoid = wagerState && wagerState.status === 'VOID';
 
             const defaultStake = getDefaultStake();
             const currentStake = wagerState ? wagerState.stake : defaultStake;
@@ -1225,23 +1232,22 @@
             let badgesHtml = w.badges.map(b => `<span class="badge badge-blue">${escapeHtml(b)}</span>`).join('');
             if (isWin) badgesHtml += `<span class="badge badge-win">SETTLED: WIN</span>`;
             if (isLoss) badgesHtml += `<span class="badge badge-loss">SETTLED: LOSS</span>`;
+            if (isPush || isVoid) badgesHtml += `<span class="badge badge-amber">SETTLED: ${wagerState.status}</span>`;
 
             let actionHtml = '';
             if (!wagerState) {
-                actionHtml = `<button class="btn-bet" onclick="placePaperBet('${w.id}')">+ Place Paper Bet</button>`;
+                actionHtml = `<button class="btn-bet" onclick="placePaperBet(${escapeHtml(JSON.stringify(String(w.id)))})">+ Place Paper Bet</button>`;
             } else if (isPending) {
-                actionHtml = `
-                    <div style="display:flex; gap:6px;">
-                        <button class="btn-win-settle" onclick="settleWager('${w.id}', 'WIN')">✓ Win</button>
-                        <button class="btn-loss-settle" onclick="settleWager('${w.id}', 'LOSS')">✕ Loss</button>
-                        <button class="btn-loss-settle" onclick="settleWager('${w.id}', 'PUSH')">Push</button>
-                        <button class="btn-loss-settle" onclick="settleWager('${w.id}', 'VOID')">Void</button>
-                    </div>
-                `;
+                actionHtml = settlementButtons(w.id);
             } else if (isWin) {
                 actionHtml = `<span style="color:var(--accent-green); font-weight:800; font-family:var(--font-mono);">SETTLED: WIN (+$${wagerState.pnl.toFixed(2)})</span>`;
             } else if (isLoss) {
                 actionHtml = `<span style="color:var(--accent-red); font-weight:800; font-family:var(--font-mono);">SETTLED: LOSS (-$${wagerState.stake.toFixed(2)})</span>`;
+            } else if (isPush || isVoid) {
+                actionHtml = `<span style="color:var(--accent-blue); font-weight:800; font-family:var(--font-mono);">SETTLED: ${wagerState.status} ($0.00)</span>`;
+            }
+            if (wagerState && !isPending) {
+                actionHtml += `<div style="margin-top:6px; color:var(--text-secondary); font-size:10px;">Correct result: ${settlementButtons(w.id)}</div>`;
             }
 
             card.innerHTML = `

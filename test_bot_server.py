@@ -1,6 +1,12 @@
+import http.client
+import json
 import os
+import sqlite3
 import tempfile
+import threading
 import unittest
+from datetime import datetime, timedelta, timezone
+from http.server import ThreadingHTTPServer
 
 import bot_server
 
@@ -53,6 +59,145 @@ class SchedulePersistenceTests(unittest.TestCase):
                 "away_team": "Same Team",
                 "home_team": " same team ",
             })
+
+    def test_only_complete_valid_market_pairs_are_snapshotted(self):
+        observed_at = datetime.now(timezone.utc).isoformat()
+        games = [{
+            "event_id": "event-1",
+            "wagers": [
+                {"side": "HOME", "market": "Moneyline", "target": "Home Team", "odds": -110,
+                 "implied_prob": 0.5238, "fair_market_prob": 0.5, "source": "DraftKings"},
+                {"side": "AWAY", "market": "Moneyline", "target": "Away Team", "odds": -110,
+                 "implied_prob": 0.5238, "fair_market_prob": 0.5, "source": "DraftKings"},
+                {"side": "BOTH", "market": "Total", "target": "Over 41.5", "odds": -110,
+                 "implied_prob": 0.5238, "fair_market_prob": 0.5, "source": "DraftKings"},
+            ],
+        }]
+
+        bot_server.persist_market_snapshots(games, observed_at)
+
+        with sqlite3.connect(bot_server.DB_FILE) as conn:
+            rows = conn.execute(
+                "SELECT event_id, market, source, observed_at FROM market_snapshots ORDER BY id"
+            ).fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row[1] for row in rows}, {"Moneyline"})
+        self.assertTrue(all(row[2:] == ("DraftKings", observed_at) for row in rows))
+        self.assertEqual(len([w for w in games[0]["wagers"] if "snapshot_id" in w]), 2)
+
+    def test_final_game_results_are_correctable(self):
+        game = {
+            "event_id": "event-1", "away": "Away Team", "home": "Home Team",
+            "away_score": "20", "home_score": "17", "completed": True,
+        }
+        bot_server.save_final_game_results([game], "2026-10-01T20:00:00+00:00")
+        game["home_score"] = "21"
+        bot_server.save_final_game_results([game], "2026-10-02T20:00:00+00:00")
+        game["completed"] = False
+        game["home_score"] = "30"
+        bot_server.save_final_game_results([game], "2026-10-03T20:00:00+00:00")
+
+        with sqlite3.connect(bot_server.DB_FILE) as conn:
+            result = conn.execute(
+                "SELECT away_score, home_score, observed_at FROM game_results WHERE event_id = 'event-1'"
+            ).fetchone()
+            history_count = conn.execute(
+                "SELECT COUNT(*) FROM game_result_history WHERE event_id = 'event-1'"
+            ).fetchone()[0]
+        self.assertEqual(result, (20, 21, "2026-10-02T20:00:00+00:00"))
+        self.assertEqual(history_count, 2)
+
+    def test_push_and_void_return_stake(self):
+        self.assertEqual(bot_server.compute_settlement_pnl(20, -110, "PUSH"), (20, 0.0))
+        self.assertEqual(bot_server.compute_settlement_pnl(20, 105, "VOID"), (20, 0.0))
+
+    def test_paper_wager_uses_captured_price_and_corrections_replace_pnl(self):
+        game = {
+            "event_id": "event-1",
+            "wagers": [
+                {"side": "AWAY", "market": "Moneyline", "target": "Away Team", "odds": -110,
+                 "implied_prob": 0.5238, "fair_market_prob": 0.5, "source": "DraftKings"},
+                {"side": "HOME", "market": "Moneyline", "target": "Home Team", "odds": -110,
+                 "implied_prob": 0.5238, "fair_market_prob": 0.5, "source": "DraftKings"},
+            ],
+        }
+        bot_server.persist_market_snapshots([game])
+        snapshot_id = game["wagers"][0]["snapshot_id"]
+        server = ThreadingHTTPServer(("127.0.0.1", 0), bot_server.UpgradedRequestHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def post(path, body):
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            connection.request("POST", path, json.dumps(body), {"Content-Type": "application/json"})
+            response = connection.getresponse()
+            result = response.status, response.read()
+            connection.close()
+            return result
+
+        try:
+            wager = {
+                "id": "paper-1", "week": 4, "game_id": "event-1", "matchup": "Away @ Home",
+                "side": "AWAY", "market": "Moneyline", "target": "Away Team",
+                "oddsNum": -110, "snapshot_id": snapshot_id, "stake": 12.34,
+            }
+            status, _ = post("/api/bets/place", wager)
+            self.assertEqual(status, 200)
+            status, response = post("/api/bets/settle", {"id": "paper-1", "result": "PUSH"})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(response)["stats"]["current_bankroll"], 1000.0)
+            status, response = post("/api/bets/settle", {"id": "paper-1", "result": "WIN"})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(response)["stats"]["current_bankroll"], 1011.22)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        with sqlite3.connect(bot_server.DB_FILE) as conn:
+            wager_row = conn.execute(
+                "SELECT status, snapshot_id, price_source, price_observed_at, fair_market_prob, net_pnl "
+                "FROM wagers WHERE id = 'paper-1'"
+            ).fetchone()
+            settlements = conn.execute(
+                "SELECT previous_status, new_status FROM wager_settlement_history "
+                "WHERE wager_id = 'paper-1' ORDER BY id"
+            ).fetchall()
+        self.assertEqual(wager_row[:3], ("WIN", snapshot_id, "DraftKings"))
+        self.assertIsNotNone(wager_row[3])
+        self.assertEqual(wager_row[4], 0.5)
+        self.assertEqual(wager_row[5], 11.22)
+        self.assertEqual(settlements, [("PENDING", "PUSH"), ("PUSH", "WIN")])
+
+    def test_paper_wager_rejects_stale_snapshot(self):
+        game = {
+            "event_id": "event-1",
+            "wagers": [
+                {"side": "AWAY", "market": "Moneyline", "target": "Away Team", "odds": -110,
+                 "implied_prob": 0.5238, "fair_market_prob": 0.5},
+                {"side": "HOME", "market": "Moneyline", "target": "Home Team", "odds": -110,
+                 "implied_prob": 0.5238, "fair_market_prob": 0.5},
+            ],
+        }
+        old_time = (datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat()
+        bot_server.persist_market_snapshots([game], old_time)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), bot_server.UpgradedRequestHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        try:
+            connection.request("POST", "/api/bets/place", json.dumps({
+                "id": "stale-paper", "week": 4, "game_id": "event-1", "side": "AWAY",
+                "market": "Moneyline", "target": "Away Team", "oddsNum": -110,
+                "snapshot_id": game["wagers"][0]["snapshot_id"], "stake": 10,
+            }), {"Content-Type": "application/json"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 409)
+        finally:
+            connection.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
 
 if __name__ == "__main__":

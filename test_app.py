@@ -16,6 +16,37 @@ class MarketProbabilityTests(unittest.TestCase):
             app.american_to_implied(0)
 
     @patch("app.requests.get")
+    def test_incomplete_market_is_not_returned(self, mock_get):
+        response = Mock()
+        response.json.return_value = {
+            "week": {"number": 4},
+            "events": [{
+                "id": "event-1",
+                "competitions": [{
+                    "competitors": [
+                        {"homeAway": "away", "team": {"displayName": "Away Team", "abbreviation": "AWY"}},
+                        {"homeAway": "home", "team": {"displayName": "Home Team", "abbreviation": "HME"}},
+                    ],
+                    "odds": [{
+                        "provider": {"name": "DraftKings"},
+                        "moneyline": {
+                            "home": {"close": {"odds": "-110"}},
+                            "away": {},
+                        },
+                        "total": {
+                            "over": {"close": {"line": "o41.5", "odds": "-110"}},
+                        },
+                    }],
+                }],
+            }],
+        }
+        mock_get.return_value = response
+
+        games = app.fetch_espn_fallback(week=4, year=2026)
+
+        self.assertEqual(games[0]["wagers"], [])
+
+    @patch("app.requests.get")
     def test_espn_fallback_uses_real_game_lines_only(self, mock_get):
         response = Mock()
         response.json.return_value = {

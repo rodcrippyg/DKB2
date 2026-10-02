@@ -8,6 +8,12 @@ On the web monitor's first schedule load for a season, ESPN is queried for both 
 
 The postseason inputs support Wild Card, Divisional, Conference Championship, and Super Bowl placeholders. They store only the round and teams you enter; sportsbook prices and matchup analysis are shown only when their real input data is available.
 
+## Market and result history
+
+The dashboard no longer includes demo picks or fabricated matchups. Markets are sourced from the ESPN feed's DraftKings prices; an outcome pair is retained only when both sides have valid odds. Each successful live-market request stores timestamped prices, source, implied probability, and no-vig market probability in SQLite. A paper wager must reference one of these snapshots, match its captured selection and price, and be recorded within 10 minutes of observation. The UI shows the source and observation time. `GET /api/markets/snapshots` returns recent snapshots.
+
+Completed ESPN game scores are saved as results, with score changes retained in a correction history. Paper wagers can be settled as WIN, LOSS, PUSH, or VOID; push and void return the stake. Settlement changes replace the current ledger result rather than adding PnL twice, and each settlement or correction is audited. These records are for paper tracking and do not make an independent prediction.
+
 ## Setup
 
 From PowerShell in the project folder:
@@ -39,3 +45,5 @@ The terminal app prefers DraftKings' public event-group endpoint and falls back 
 There is currently no independently estimated probability model. No-vig probabilities describe the sportsbook market after removing its quoted overround; they are a market baseline, not a prediction from this tool. The planned model must compare multiple real team and player matchup factors, estimate probability, and account for the offered price and vig. A model edge should only be shown after storing time-stamped picks and outcomes and validating predictions on held-out historical data.
 
 The intended model must compare actual, matchup-relevant team and player factors and account for the offered price and vig before calling a pick positive expected value. That analysis is not implemented or validated yet.
+
+The stored market snapshots and corrected game results are the initial inputs for that work, not a sufficient historical dataset or backtest by themselves. A future baseline must be trained and evaluated against sourced features using chronological held-out games, with calibration and odds-adjusted performance reported; until then the app intentionally labels every price as a market baseline and generates no model picks.
