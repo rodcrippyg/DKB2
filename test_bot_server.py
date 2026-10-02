@@ -93,6 +93,12 @@ class SchedulePersistenceTests(unittest.TestCase):
             "season_year": 2026, "week": 2, "kickoff_utc": "2026-09-01T17:00:00Z",
         }
         bot_server.save_final_game_results([game], "2026-10-01T20:00:00+00:00")
+        bot_server.save_final_game_results([game], "2026-10-01T21:00:00+00:00")
+        with sqlite3.connect(bot_server.DB_FILE) as conn:
+            first_observed_at = conn.execute(
+                "SELECT observed_at FROM game_results WHERE event_id = 'event-1'"
+            ).fetchone()[0]
+        self.assertEqual(first_observed_at, "2026-10-01T20:00:00+00:00")
         game["home_score"] = "21"
         bot_server.save_final_game_results([game], "2026-10-02T20:00:00+00:00")
         game["completed"] = False
@@ -135,26 +141,42 @@ class SchedulePersistenceTests(unittest.TestCase):
                 "away_score": 0, "home_score": 99, "completed": True,
             },
             {
+                "event_id": "late-result", "season_year": 2026, "week": 3,
+                "kickoff_utc": "2026-09-14T17:00:00Z", "away": "Team A", "home": "Team L",
+                "away_score": 99, "home_score": 0, "completed": True,
+            },
+            {
                 "event_id": "other-season", "season_year": 2025, "week": 18,
                 "kickoff_utc": "2025-12-20T17:00:00Z", "away": "Team A", "home": "Team Q",
                 "away_score": 1, "home_score": 99, "completed": True,
             },
         ]
-        bot_server.save_final_game_results(prior_games, "2026-10-01T20:00:00+00:00")
+        observed_at_by_event = {
+            "prior-1": "2026-09-02T17:00:00+00:00",
+            "prior-2": "2026-09-09T17:00:00+00:00",
+            "same-time": "2026-09-15T17:01:00+00:00",
+            "future": "2026-09-23T17:00:00+00:00",
+            "late-result": "2026-09-16T17:00:00+00:00",
+            "other-season": "2025-12-21T17:00:00+00:00",
+        }
+        for prior_game in prior_games:
+            bot_server.save_final_game_results(
+                [prior_game], observed_at_by_event[prior_game["event_id"]],
+            )
         target = {
             "event_id": "target", "season_year": 2026, "week": 4,
             "kickoff_utc": "2026-09-15T17:00:00Z", "away": "Team A", "home": "Team B",
         }
 
         saved_count = bot_server.save_pregame_team_features(
-            [target], "2026-10-02T00:00:00+00:00",
+            [target], "2026-09-15T16:00:00+00:00",
         )
 
         self.assertEqual(saved_count, 2)
         with sqlite3.connect(bot_server.DB_FILE) as conn:
             away_features = conn.execute("""
                 SELECT prior_games, avg_points_for, avg_points_against, avg_point_diff,
-                       kickoff_utc, source, observed_at
+                       kickoff_utc, source, observed_at, inputs_observed_through
                 FROM team_game_features WHERE event_id = 'target' AND side = 'AWAY'
             """).fetchone()
             home_features = conn.execute("""
@@ -163,9 +185,14 @@ class SchedulePersistenceTests(unittest.TestCase):
             """).fetchone()
         self.assertEqual(away_features[:4], (2, 25.5, 12.0, 13.5))
         self.assertEqual(away_features[4:], (
-            "2026-09-15T17:00:00+00:00", "ESPN completed game scores", "2026-10-02T00:00:00+00:00",
+            "2026-09-15T17:00:00+00:00", "ESPN completed game scores",
+            "2026-09-15T16:00:00+00:00", "2026-09-09T17:00:00+00:00",
         ))
         self.assertEqual(home_features, (0, None, None))
+        self.assertEqual(
+            bot_server.save_pregame_team_features([target], "2026-09-15T18:00:00+00:00"),
+            0,
+        )
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), bot_server.UpgradedRequestHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -421,7 +448,7 @@ class SchedulePersistenceTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(payload["games_fetched"], 2)
             self.assertEqual(payload["completed_results_saved"], 1)
-            self.assertEqual(payload["team_feature_rows_saved"], 4)
+            self.assertEqual(payload["team_feature_rows_saved"], 2)
             mock_fetch.assert_called_once_with(year=2026, full_season=True)
 
             games[0]["home_score"] = "21"

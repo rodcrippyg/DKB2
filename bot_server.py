@@ -126,9 +126,13 @@ def init_db():
                 avg_point_diff REAL,
                 feature_name TEXT NOT NULL,
                 source TEXT NOT NULL,
-                observed_at TEXT NOT NULL
+                observed_at TEXT NOT NULL,
+                inputs_observed_through TEXT
             )
         """)
+        feature_columns = {row[1] for row in cursor.execute("PRAGMA table_info(team_game_features)")}
+        if "inputs_observed_through" not in feature_columns:
+            cursor.execute("ALTER TABLE team_game_features ADD COLUMN inputs_observed_through TEXT")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_team_game_features_event ON team_game_features(event_id, team, observed_at);")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS game_result_history (
@@ -512,7 +516,12 @@ def save_final_game_results(games: list[dict], observed_at: str | None = None) -
                 ON CONFLICT(event_id) DO UPDATE SET
                     away_team = excluded.away_team, home_team = excluded.home_team,
                     away_score = excluded.away_score, home_score = excluded.home_score,
-                    source = excluded.source, observed_at = excluded.observed_at,
+                    source = excluded.source,
+                    observed_at = CASE
+                        WHEN game_results.away_score != excluded.away_score
+                             OR game_results.home_score != excluded.home_score
+                        THEN excluded.observed_at ELSE game_results.observed_at
+                    END,
                     kickoff_utc = COALESCE(excluded.kickoff_utc, game_results.kickoff_utc),
                     season_year = COALESCE(excluded.season_year, game_results.season_year),
                     week = COALESCE(excluded.week, game_results.week)
@@ -546,20 +555,24 @@ def save_pregame_team_features(
     if prior_game_limit < 1:
         raise ValueError("prior_game_limit must be positive")
     observed_at = observed_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    feature_observed_at = _parse_utc_datetime(observed_at)
+    if feature_observed_at is None:
+        raise ValueError("observed_at must be a timezone-aware timestamp")
     feature_count = 0
     with sqlite3.connect(DB_FILE) as conn:
         results = conn.execute("""
-            SELECT season_year, kickoff_utc, away_team, home_team, away_score, home_score
+            SELECT season_year, kickoff_utc, away_team, home_team, away_score, home_score, observed_at
             FROM game_results
             WHERE kickoff_utc IS NOT NULL AND season_year IS NOT NULL
         """).fetchall()
         season_results = {}
-        for season_year, kickoff, away, home, away_score, home_score in results:
+        for season_year, kickoff, away, home, away_score, home_score, observed_at_result in results:
             kickoff_time = _parse_utc_datetime(kickoff)
-            if kickoff_time is None:
+            result_observed_at = _parse_utc_datetime(observed_at_result)
+            if kickoff_time is None or result_observed_at is None:
                 continue
             season_results.setdefault(season_year, []).append(
-                (kickoff_time, away, home, away_score, home_score)
+                (kickoff_time, result_observed_at, away, home, away_score, home_score)
             )
 
         for game in games:
@@ -569,7 +582,8 @@ def save_pregame_team_features(
             kickoff = _parse_utc_datetime(kickoff_raw)
             away_team = game.get("away", game.get("away_team", ""))
             home_team = game.get("home", game.get("home_team", ""))
-            if not event_id or season_year is None or kickoff is None or not away_team or not home_team:
+            if (not event_id or season_year is None or kickoff is None
+                    or kickoff <= feature_observed_at or not away_team or not home_team):
                 continue
 
             results_for_season = season_results.get(season_year, [])
@@ -578,30 +592,35 @@ def save_pregame_team_features(
                 (home_team, away_team, "HOME"),
             ):
                 prior = []
-                for previous_kickoff, previous_away, previous_home, away_score, home_score in results_for_season:
-                    if previous_kickoff >= kickoff:
+                for (previous_kickoff, result_observed_at, previous_away, previous_home,
+                     away_score, home_score) in results_for_season:
+                    if previous_kickoff >= kickoff or result_observed_at >= kickoff:
                         continue
                     if team.casefold() == previous_away.casefold():
-                        prior.append((previous_kickoff, away_score, home_score))
+                        prior.append((previous_kickoff, result_observed_at, away_score, home_score))
                     elif team.casefold() == previous_home.casefold():
-                        prior.append((previous_kickoff, home_score, away_score))
+                        prior.append((previous_kickoff, result_observed_at, home_score, away_score))
                 prior = sorted(prior, key=lambda row: row[0])[-prior_game_limit:]
                 count = len(prior)
-                points_for = sum(row[1] for row in prior) / count if count else None
-                points_against = sum(row[2] for row in prior) / count if count else None
+                points_for = sum(row[2] for row in prior) / count if count else None
+                points_against = sum(row[3] for row in prior) / count if count else None
                 point_diff = (
-                    sum(row[1] - row[2] for row in prior) / count if count else None
+                    sum(row[2] - row[3] for row in prior) / count if count else None
+                )
+                inputs_observed_through = (
+                    max(row[1] for row in prior).isoformat(timespec="seconds") if count else None
                 )
                 conn.execute("""
                     INSERT INTO team_game_features
                     (event_id, team, opponent, side, season_year, week, kickoff_utc, prior_games,
-                     avg_points_for, avg_points_against, avg_point_diff, feature_name, source, observed_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     avg_points_for, avg_points_against, avg_point_diff, feature_name, source,
+                     observed_at, inputs_observed_through)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     event_id, team, opponent, side, season_year, game.get("week"),
                     kickoff.astimezone(timezone.utc).isoformat(timespec="seconds"), count,
                     points_for, points_against, point_diff, f"previous_up_to_{prior_game_limit}_same_season_games",
-                    "ESPN completed game scores", observed_at,
+                    "ESPN completed game scores", observed_at, inputs_observed_through,
                 ))
                 feature_count += 1
         conn.commit()
@@ -839,7 +858,8 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
                 query = """
                     SELECT f.id, f.event_id, f.team, f.opponent, f.side, f.season_year, f.week,
                            f.kickoff_utc, f.prior_games, f.avg_points_for, f.avg_points_against,
-                           f.avg_point_diff, f.feature_name, f.source, f.observed_at
+                           f.avg_point_diff, f.feature_name, f.source, f.observed_at,
+                           f.inputs_observed_through
                     FROM team_game_features f
                     JOIN (
                         SELECT event_id, team, MAX(id) AS latest_id
@@ -851,7 +871,7 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
                 if event_id:
                     query += " WHERE f.event_id = ?"
                     params = (event_id,)
-                query += " ORDER BY f.kickoff_utc, f.event_id, f.side LIMIT 500"
+                query += " ORDER BY f.kickoff_utc, f.event_id, f.side"
                 items = [dict(row) for row in conn.execute(query, params)]
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
