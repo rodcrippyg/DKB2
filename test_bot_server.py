@@ -112,12 +112,29 @@ class SchedulePersistenceTests(unittest.TestCase):
         self.assertEqual(bot_server.compute_settlement_pnl(20, -110, "PUSH"), (20, 0.0))
         self.assertEqual(bot_server.compute_settlement_pnl(20, 105, "VOID"), (20, 0.0))
 
+    def test_void_wagers_are_excluded_from_settled_roi_exposure(self):
+        with sqlite3.connect(bot_server.DB_FILE) as conn:
+            conn.executemany("""
+                INSERT INTO wagers (id, stake, status, net_pnl, odds)
+                VALUES (?, 10, ?, ?, -110)
+            """, [
+                ("roi-win", "WIN", 5),
+                ("roi-loss", "LOSS", -10),
+                ("roi-push", "PUSH", 0),
+                ("roi-void", "VOID", 0),
+            ])
+        stats = bot_server.calculate_actual_ledger_stats()
+        self.assertEqual(stats["total_staked"], 30)
+        self.assertEqual(stats["net_pnl"], -5)
+        self.assertEqual(stats["roi"], "-16.7%")
+
     def test_resolves_moneyline_spread_and_total_results(self):
         cases = [
             ("Moneyline", "Away Team", "AWAY", 20, 17, "WIN"),
             ("Moneyline", "Home Team", "HOME", 20, 17, "LOSS"),
             ("Moneyline", "Away Team", "AWAY", 17, 17, "PUSH"),
-            ("Spread", "Home Team -3", "HOME", 20, 17, "PUSH"),
+            ("Spread", "Home Team +3", "HOME", 20, 17, "PUSH"),
+            ("Spread", "Home Team -3", "HOME", 20, 17, "LOSS"),
             ("Spread", "Away Team +3.5", "AWAY", 20, 17, "WIN"),
             ("Spread", "Home Team +3.5", "HOME", 20, 17, "WIN"),
             ("Total", "Over 37", "BOTH", 20, 17, "PUSH"),
@@ -139,7 +156,7 @@ class SchedulePersistenceTests(unittest.TestCase):
     def test_completed_results_auto_settle_captured_game_markets_and_recalculate_corrections(self):
         wagers = [
             ("money-away", "AWAY", "Moneyline", "Away Team", -110, "PENDING", "MANUAL"),
-            ("spread-home", "HOME", "Spread", "Home Team -3", -110, "PENDING", "MANUAL"),
+            ("spread-home", "HOME", "Spread", "Home Team +3", -110, "PENDING", "MANUAL"),
             ("total-over", "BOTH", "Total", "Over 36.5", -110, "PENDING", "MANUAL"),
             ("unknown-market", "HOME", "Player Props", "Player over 20.5", -110, "PENDING", "MANUAL"),
             ("manual-result", "AWAY", "Moneyline", "Away Team", -110, "LOSS", "MANUAL"),
@@ -181,7 +198,7 @@ class SchedulePersistenceTests(unittest.TestCase):
                 "WHERE wager_id = 'money-away' ORDER BY id"
             ).fetchall()
         self.assertEqual(current["money-away"], "LOSS")
-        self.assertEqual(current["spread-home"], "LOSS")
+        self.assertEqual(current["spread-home"], "WIN")
         self.assertEqual(current["total-over"], "LOSS")
         self.assertEqual(current["total_over_pnl"], -10)
         self.assertEqual(auto_history, [("PENDING", "WIN", "ESPN_AUTO"), ("WIN", "LOSS", "ESPN_AUTO")])

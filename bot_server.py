@@ -557,7 +557,7 @@ def calculate_actual_ledger_stats(strategy_mode="TIERED"):
         pushes = sum(1 for r in rows if r[0] == "PUSH")
         voids = sum(1 for r in rows if r[0] == "VOID")
         total_bets = wins + losses
-        total_staked = sum(r[1] for r in rows)
+        total_staked = sum(r[1] for r in rows if r[0] != "VOID")
         total_net_pnl = sum(r[2] for r in rows)
         win_rate = (wins / total_bets * 100.0) if total_bets > 0 else 0.0
         roi = (total_net_pnl / total_staked * 100.0) if total_staked > 0 else 0.0
