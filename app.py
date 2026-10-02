@@ -155,6 +155,7 @@ def fetch_espn_fallback(
                 "away": away_name,
                 "home": home_name,
                 "start": evt.get("date", "")[:16].replace("T", " "),
+                "kickoff_utc": evt.get("date"),
                 "week": event_week,
                 "is_current_week": event_week == data.get("week", {}).get("number"),
                 "away_team": away_name,

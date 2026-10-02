@@ -90,6 +90,7 @@ class SchedulePersistenceTests(unittest.TestCase):
         game = {
             "event_id": "event-1", "away": "Away Team", "home": "Home Team",
             "away_score": "20", "home_score": "17", "completed": True,
+            "season_year": 2026, "week": 2, "kickoff_utc": "2026-09-01T17:00:00Z",
         }
         bot_server.save_final_game_results([game], "2026-10-01T20:00:00+00:00")
         game["home_score"] = "21"
@@ -100,13 +101,88 @@ class SchedulePersistenceTests(unittest.TestCase):
 
         with sqlite3.connect(bot_server.DB_FILE) as conn:
             result = conn.execute(
-                "SELECT away_score, home_score, observed_at FROM game_results WHERE event_id = 'event-1'"
+                "SELECT away_score, home_score, observed_at, kickoff_utc, season_year, week "
+                "FROM game_results WHERE event_id = 'event-1'"
             ).fetchone()
             history_count = conn.execute(
                 "SELECT COUNT(*) FROM game_result_history WHERE event_id = 'event-1'"
             ).fetchone()[0]
-        self.assertEqual(result, (20, 21, "2026-10-02T20:00:00+00:00"))
+        self.assertEqual(result, (
+            20, 21, "2026-10-02T20:00:00+00:00", "2026-09-01T17:00:00Z", 2026, 2,
+        ))
         self.assertEqual(history_count, 1)
+
+    def test_pregame_team_features_use_only_prior_completed_games(self):
+        prior_games = [
+            {
+                "event_id": "prior-1", "season_year": 2026, "week": 1,
+                "kickoff_utc": "2026-09-01T17:00:00Z", "away": "Team A", "home": "Team X",
+                "away_score": 30, "home_score": 10, "completed": True,
+            },
+            {
+                "event_id": "prior-2", "season_year": 2026, "week": 2,
+                "kickoff_utc": "2026-09-08T17:00:00Z", "away": "Team Y", "home": "team a",
+                "away_score": 14, "home_score": 21, "completed": True,
+            },
+            {
+                "event_id": "same-time", "season_year": 2026, "week": 3,
+                "kickoff_utc": "2026-09-15T17:00:00Z", "away": "Team A", "home": "Team Z",
+                "away_score": 99, "home_score": 0, "completed": True,
+            },
+            {
+                "event_id": "future", "season_year": 2026, "week": 5,
+                "kickoff_utc": "2026-09-22T17:00:00Z", "away": "Team A", "home": "Team W",
+                "away_score": 0, "home_score": 99, "completed": True,
+            },
+            {
+                "event_id": "other-season", "season_year": 2025, "week": 18,
+                "kickoff_utc": "2025-12-20T17:00:00Z", "away": "Team A", "home": "Team Q",
+                "away_score": 1, "home_score": 99, "completed": True,
+            },
+        ]
+        bot_server.save_final_game_results(prior_games, "2026-10-01T20:00:00+00:00")
+        target = {
+            "event_id": "target", "season_year": 2026, "week": 4,
+            "kickoff_utc": "2026-09-15T17:00:00Z", "away": "Team A", "home": "Team B",
+        }
+
+        saved_count = bot_server.save_pregame_team_features(
+            [target], "2026-10-02T00:00:00+00:00",
+        )
+
+        self.assertEqual(saved_count, 2)
+        with sqlite3.connect(bot_server.DB_FILE) as conn:
+            away_features = conn.execute("""
+                SELECT prior_games, avg_points_for, avg_points_against, avg_point_diff,
+                       kickoff_utc, source, observed_at
+                FROM team_game_features WHERE event_id = 'target' AND side = 'AWAY'
+            """).fetchone()
+            home_features = conn.execute("""
+                SELECT prior_games, avg_points_for, avg_points_against
+                FROM team_game_features WHERE event_id = 'target' AND side = 'HOME'
+            """).fetchone()
+        self.assertEqual(away_features[:4], (2, 25.5, 12.0, 13.5))
+        self.assertEqual(away_features[4:], (
+            "2026-09-15T17:00:00+00:00", "ESPN completed game scores", "2026-10-02T00:00:00+00:00",
+        ))
+        self.assertEqual(home_features, (0, None, None))
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), bot_server.UpgradedRequestHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            connection.request("GET", "/api/history/team-features?event_id=target")
+            response = connection.getresponse()
+            payload = json.loads(response.read())
+            connection.close()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(len(payload), 2)
+            self.assertEqual({row["team"] for row in payload}, {"Team A", "Team B"})
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_push_and_void_return_stake(self):
         self.assertEqual(bot_server.compute_settlement_pnl(20, -110, "PUSH"), (20, 0.0))
@@ -316,10 +392,12 @@ class SchedulePersistenceTests(unittest.TestCase):
             {
                 "event_id": "final-1", "away": "Away", "home": "Home",
                 "away_score": "20", "home_score": "17", "completed": True,
+                "season_year": 2026, "week": 4, "kickoff_utc": "2026-10-01T20:00:00Z",
             },
             {
                 "event_id": "scheduled-1", "away": "Next Away", "home": "Next Home",
                 "away_score": None, "home_score": None, "completed": False,
+                "season_year": 2026, "week": 5, "kickoff_utc": "2026-10-08T20:00:00Z",
             },
         ]
         mock_fetch.return_value = games
@@ -343,6 +421,7 @@ class SchedulePersistenceTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(payload["games_fetched"], 2)
             self.assertEqual(payload["completed_results_saved"], 1)
+            self.assertEqual(payload["team_feature_rows_saved"], 4)
             mock_fetch.assert_called_once_with(year=2026, full_season=True)
 
             games[0]["home_score"] = "21"

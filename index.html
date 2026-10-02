@@ -1073,7 +1073,7 @@
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || `Refresh failed (${response.status})`);
                 document.getElementById("tickerMessage").textContent =
-                    `Season ${result.season_year}: refreshed ${result.completed_results_saved} completed results from ${result.games_fetched} ESPN games.`;
+                    `Season ${result.season_year}: refreshed ${result.completed_results_saved} completed results and saved ${result.team_feature_rows_saved} pregame team-stat rows from ${result.games_fetched} ESPN games.`;
             } catch (error) {
                 document.getElementById("tickerMessage").textContent = error.message;
             } finally {

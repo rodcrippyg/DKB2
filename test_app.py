@@ -83,6 +83,7 @@ class MarketProbabilityTests(unittest.TestCase):
         games = app.fetch_espn_fallback(week=4, year=2026)
 
         self.assertEqual(len(games), 1)
+        self.assertEqual(games[0]["kickoff_utc"], "2026-10-01T20:00:00Z")
         self.assertEqual(len(games[0]["wagers"]), 6)
         self.assertEqual({wager["market"] for wager in games[0]["wagers"]}, {"Moneyline", "Spread", "Total"})
         self.assertEqual(games[0]["wagers"][-2]["target"], "Over 41.5")

@@ -96,9 +96,40 @@ def init_db():
                 away_score INTEGER NOT NULL,
                 home_score INTEGER NOT NULL,
                 source TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                kickoff_utc TEXT,
+                season_year INTEGER,
+                week INTEGER
+            )
+        """)
+        result_columns = {row[1] for row in cursor.execute("PRAGMA table_info(game_results)")}
+        for column, definition in (
+            ("kickoff_utc", "TEXT"),
+            ("season_year", "INTEGER"),
+            ("week", "INTEGER"),
+        ):
+            if column not in result_columns:
+                cursor.execute(f"ALTER TABLE game_results ADD COLUMN {column} {definition}")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS team_game_features (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL,
+                team TEXT NOT NULL,
+                opponent TEXT NOT NULL,
+                side TEXT NOT NULL,
+                season_year INTEGER NOT NULL,
+                week INTEGER,
+                kickoff_utc TEXT NOT NULL,
+                prior_games INTEGER NOT NULL,
+                avg_points_for REAL,
+                avg_points_against REAL,
+                avg_point_diff REAL,
+                feature_name TEXT NOT NULL,
+                source TEXT NOT NULL,
                 observed_at TEXT NOT NULL
             )
         """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_team_game_features_event ON team_game_features(event_id, team, observed_at);")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS game_result_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -475,21 +506,106 @@ def save_final_game_results(games: list[dict], observed_at: str | None = None) -
                 """, (event_id, away_score, home_score, "ESPN", observed_at))
             conn.execute("""
                 INSERT INTO game_results
-                (event_id, away_team, home_team, away_score, home_score, source, observed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (event_id, away_team, home_team, away_score, home_score, source, observed_at,
+                 kickoff_utc, season_year, week)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(event_id) DO UPDATE SET
                     away_team = excluded.away_team, home_team = excluded.home_team,
                     away_score = excluded.away_score, home_score = excluded.home_score,
-                    source = excluded.source, observed_at = excluded.observed_at
+                    source = excluded.source, observed_at = excluded.observed_at,
+                    kickoff_utc = COALESCE(excluded.kickoff_utc, game_results.kickoff_utc),
+                    season_year = COALESCE(excluded.season_year, game_results.season_year),
+                    week = COALESCE(excluded.week, game_results.week)
             """, (
                 event_id, game.get("away", game.get("away_team", "")),
                 game.get("home", game.get("home_team", "")), away_score, home_score,
-                "ESPN", observed_at,
+                "ESPN", observed_at, game.get("kickoff_utc"),
+                game.get("season_year"), game.get("week"),
             ))
             settle_completed_game_wagers(conn, game, observed_at)
             saved_count += 1
         conn.commit()
     return saved_count
+
+
+def _parse_utc_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def save_pregame_team_features(
+    games: list[dict],
+    observed_at: str | None = None,
+    prior_game_limit: int = 5,
+) -> int:
+    if prior_game_limit < 1:
+        raise ValueError("prior_game_limit must be positive")
+    observed_at = observed_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    feature_count = 0
+    with sqlite3.connect(DB_FILE) as conn:
+        results = conn.execute("""
+            SELECT season_year, kickoff_utc, away_team, home_team, away_score, home_score
+            FROM game_results
+            WHERE kickoff_utc IS NOT NULL AND season_year IS NOT NULL
+        """).fetchall()
+        season_results = {}
+        for season_year, kickoff, away, home, away_score, home_score in results:
+            kickoff_time = _parse_utc_datetime(kickoff)
+            if kickoff_time is None:
+                continue
+            season_results.setdefault(season_year, []).append(
+                (kickoff_time, away, home, away_score, home_score)
+            )
+
+        for game in games:
+            event_id = str(game.get("event_id", ""))
+            season_year = game.get("season_year")
+            kickoff_raw = game.get("kickoff_utc")
+            kickoff = _parse_utc_datetime(kickoff_raw)
+            away_team = game.get("away", game.get("away_team", ""))
+            home_team = game.get("home", game.get("home_team", ""))
+            if not event_id or season_year is None or kickoff is None or not away_team or not home_team:
+                continue
+
+            results_for_season = season_results.get(season_year, [])
+            for team, opponent, side in (
+                (away_team, home_team, "AWAY"),
+                (home_team, away_team, "HOME"),
+            ):
+                prior = []
+                for previous_kickoff, previous_away, previous_home, away_score, home_score in results_for_season:
+                    if previous_kickoff >= kickoff:
+                        continue
+                    if team.casefold() == previous_away.casefold():
+                        prior.append((previous_kickoff, away_score, home_score))
+                    elif team.casefold() == previous_home.casefold():
+                        prior.append((previous_kickoff, home_score, away_score))
+                prior = sorted(prior, key=lambda row: row[0])[-prior_game_limit:]
+                count = len(prior)
+                points_for = sum(row[1] for row in prior) / count if count else None
+                points_against = sum(row[2] for row in prior) / count if count else None
+                point_diff = (
+                    sum(row[1] - row[2] for row in prior) / count if count else None
+                )
+                conn.execute("""
+                    INSERT INTO team_game_features
+                    (event_id, team, opponent, side, season_year, week, kickoff_utc, prior_games,
+                     avg_points_for, avg_points_against, avg_point_diff, feature_name, source, observed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    event_id, team, opponent, side, season_year, game.get("week"),
+                    kickoff.astimezone(timezone.utc).isoformat(timespec="seconds"), count,
+                    points_for, points_against, point_diff, f"previous_up_to_{prior_game_limit}_same_season_games",
+                    "ESPN completed game scores", observed_at,
+                ))
+                feature_count += 1
+        conn.commit()
+    return feature_count
 
 
 def get_real_player_stat(event_id: str, player_name: str, market_type: str) -> float:
@@ -705,9 +821,38 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
             with sqlite3.connect(DB_FILE) as conn:
                 conn.row_factory = sqlite3.Row
                 items = [dict(row) for row in conn.execute("""
-                    SELECT event_id, away_team, home_team, away_score, home_score, source, observed_at
+                    SELECT event_id, away_team, home_team, away_score, home_score, source,
+                           observed_at, kickoff_utc, season_year, week
                     FROM game_results ORDER BY observed_at DESC LIMIT 500
                 """)]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(items).encode("utf-8"))
+            return
+
+        elif parsed.path == "/api/history/team-features":
+            query_params = urllib.parse.parse_qs(parsed.query)
+            event_id = query_params.get("event_id", [None])[0]
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.row_factory = sqlite3.Row
+                query = """
+                    SELECT f.id, f.event_id, f.team, f.opponent, f.side, f.season_year, f.week,
+                           f.kickoff_utc, f.prior_games, f.avg_points_for, f.avg_points_against,
+                           f.avg_point_diff, f.feature_name, f.source, f.observed_at
+                    FROM team_game_features f
+                    JOIN (
+                        SELECT event_id, team, MAX(id) AS latest_id
+                        FROM team_game_features
+                        GROUP BY event_id, team
+                    ) latest ON latest.latest_id = f.id
+                """
+                params = ()
+                if event_id:
+                    query += " WHERE f.event_id = ?"
+                    params = (event_id,)
+                query += " ORDER BY f.kickoff_utc, f.event_id, f.side LIMIT 500"
+                items = [dict(row) for row in conn.execute(query, params)]
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -812,6 +957,7 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
             saved_count = save_final_game_results(games)
+            feature_count = save_pregame_team_features(games)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -820,6 +966,7 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "season_year": year,
                 "games_fetched": len(games),
                 "completed_results_saved": saved_count,
+                "team_feature_rows_saved": feature_count,
             }).encode("utf-8"))
             return
 
