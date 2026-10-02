@@ -585,6 +585,32 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps(items).encode("utf-8"))
             return
 
+        elif parsed.path == "/api/history/result-changes":
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.row_factory = sqlite3.Row
+                items = [dict(row) for row in conn.execute("""
+                    SELECT id, event_id, away_score, home_score, source, observed_at
+                    FROM game_result_history ORDER BY observed_at DESC, id DESC LIMIT 500
+                """)]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(items).encode("utf-8"))
+            return
+
+        elif parsed.path == "/api/history/settlements":
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.row_factory = sqlite3.Row
+                items = [dict(row) for row in conn.execute("""
+                    SELECT id, wager_id, previous_status, new_status, payout, net_pnl, occurred_at
+                    FROM wager_settlement_history ORDER BY occurred_at DESC, id DESC LIMIT 500
+                """)]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(items).encode("utf-8"))
+            return
+
         # 3. Retrieve All Stored Wagers
         elif parsed.path == "/api/ledger/wagers":
             with sqlite3.connect(DB_FILE) as conn:

@@ -821,6 +821,8 @@
             netPnl: 0.0,
             wins: 0,
             losses: 0,
+            pushes: 0,
+            voids: 0,
             wagers: [] // { id, target, stake, oddsNum, tier, status: 'PENDING'|'WIN'|'LOSS', pnl: 0 }
         };
 
@@ -1080,9 +1082,12 @@
             ledger.netPnl = performance.net_pnl;
             ledger.wins = performance.wins;
             ledger.losses = performance.losses;
+            ledger.pushes = performance.pushes;
+            ledger.voids = performance.voids;
             ledger.wagers = wagers.map(wager => ({
                 id: wager.id,
                 target: wager.target,
+                matchup: wager.matchup,
                 stake: wager.stake,
                 oddsNum: wager.odds,
                 side: wager.side,
@@ -1105,7 +1110,8 @@
             const roi = ledger.totalStaked > 0 ? ((ledger.netPnl / ledger.totalStaked) * 100).toFixed(1) : "0.0";
 
             document.getElementById("inputStartingBankroll").value = ledger.baseBankroll.toFixed(2);
-            document.getElementById("stat-record").textContent = `${ledger.wins} – ${ledger.losses}`;
+            document.getElementById("stat-record").textContent =
+                `${ledger.wins} – ${ledger.losses} – ${ledger.pushes} pushes – ${ledger.voids} voids`;
             document.getElementById("stat-winrate").textContent = `${winRate}%`;
 
             const pnlElem = document.getElementById("stat-pnl");

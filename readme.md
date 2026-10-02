@@ -12,6 +12,8 @@ The postseason inputs support Wild Card, Divisional, Conference Championship, an
 
 The dashboard no longer includes demo picks or fabricated matchups. Markets are sourced from the ESPN feed's DraftKings prices; an outcome pair is retained only when both sides have valid odds. Each successful live-market request stores timestamped prices, source, implied probability, and no-vig market probability in SQLite. A paper wager must reference one of these snapshots, match its captured selection and price, and be recorded within 10 minutes of observation. The UI shows the source and observation time. `GET /api/markets/snapshots` returns recent snapshots.
 
+The observation time is when this app fetched the odds feed, not a provider-confirmed quote update time. The feed does not currently supply a verified per-quote freshness timestamp, so a newly fetched snapshot does not prove a DraftKings price is still available. Treat all displayed odds as informational paper-tracking data, not executable prices. Completed game results are available through `GET /api/history/results`; `GET /api/history/result-changes` and `GET /api/history/settlements` expose correction audits.
+
 Completed ESPN game scores are saved as results, with score changes retained in a correction history. Paper wagers can be settled as WIN, LOSS, PUSH, or VOID; push and void return the stake. Settlement changes replace the current ledger result rather than adding PnL twice, and each settlement or correction is audited. These records are for paper tracking and do not make an independent prediction.
 
 ## Setup
