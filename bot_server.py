@@ -627,6 +627,156 @@ def save_pregame_team_features(
     return feature_count
 
 
+def build_prospective_model_dataset() -> dict:
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        results = conn.execute("""
+            SELECT event_id, season_year, kickoff_utc, away_team, home_team,
+                   away_score, home_score, observed_at
+            FROM game_results
+            WHERE kickoff_utc IS NOT NULL AND season_year IS NOT NULL
+            ORDER BY kickoff_utc, event_id
+        """).fetchall()
+        feature_rows = conn.execute("""
+            SELECT event_id, team, side, prior_games, avg_points_for, avg_points_against,
+                   avg_point_diff, observed_at, inputs_observed_through
+            FROM team_game_features
+        """).fetchall()
+        market_rows = conn.execute("""
+            SELECT id, event_id, market, side, target, odds, implied_prob, fair_market_prob,
+                   source, observed_at
+            FROM market_snapshots
+            WHERE market = 'Moneyline'
+        """).fetchall()
+
+    features_by_game = {}
+    for row in feature_rows:
+        features_by_game.setdefault(row["event_id"], []).append(row)
+    markets_by_game = {}
+    for row in market_rows:
+        markets_by_game.setdefault(row["event_id"], []).append(row)
+
+    eligible_rows = []
+    counts = {
+        "finals_with_kickoff": 0,
+        "finals_with_observed_pregame_features": 0,
+        "finals_with_pregame_moneyline_pair": 0,
+        "usable_non_tie_rows": 0,
+    }
+    by_season = {}
+
+    for result in results:
+        kickoff = _parse_utc_datetime(result["kickoff_utc"])
+        result_observed_at = _parse_utc_datetime(result["observed_at"])
+        if kickoff is None or result_observed_at is None or result_observed_at <= kickoff:
+            continue
+        counts["finals_with_kickoff"] += 1
+        season = by_season.setdefault(str(result["season_year"]), {
+            "finals_with_kickoff": 0,
+            "finals_with_observed_pregame_features": 0,
+            "finals_with_pregame_moneyline_pair": 0,
+            "usable_non_tie_rows": 0,
+        })
+        season["finals_with_kickoff"] += 1
+
+        features = {}
+        for feature in features_by_game.get(result["event_id"], []):
+            feature_observed_at = _parse_utc_datetime(feature["observed_at"])
+            inputs_observed_through = _parse_utc_datetime(feature["inputs_observed_through"])
+            if (feature_observed_at is None or feature_observed_at >= kickoff
+                    or feature["prior_games"] < 1 or inputs_observed_through is None
+                    or inputs_observed_through >= kickoff):
+                continue
+            existing = features.get(feature["side"])
+            if existing is None or feature["observed_at"] > existing["observed_at"]:
+                features[feature["side"]] = feature
+        if (set(features) != {"HOME", "AWAY"}
+                or features["HOME"]["team"].casefold() != result["home_team"].casefold()
+                or features["AWAY"]["team"].casefold() != result["away_team"].casefold()):
+            continue
+        counts["finals_with_observed_pregame_features"] += 1
+        season["finals_with_observed_pregame_features"] += 1
+
+        market_pairs = {}
+        for market in markets_by_game.get(result["event_id"], []):
+            observed_at = _parse_utc_datetime(market["observed_at"])
+            if observed_at is None or observed_at >= kickoff:
+                continue
+            market_pairs.setdefault(market["observed_at"], []).append(market)
+        complete_pairs = []
+        for observed_at, pair in market_pairs.items():
+            by_side = {}
+            for item in pair:
+                if item["side"] not in ("HOME", "AWAY"):
+                    continue
+                if item["side"] not in by_side or item["id"] > by_side[item["side"]]["id"]:
+                    by_side[item["side"]] = item
+            if set(by_side) != {"HOME", "AWAY"}:
+                continue
+            if (by_side["HOME"]["target"].casefold() != result["home_team"].casefold()
+                    or by_side["AWAY"]["target"].casefold() != result["away_team"].casefold()):
+                continue
+            if any(not math.isfinite(item["fair_market_prob"])
+                   or not 0 < item["fair_market_prob"] < 1 for item in pair):
+                continue
+            if not math.isclose(
+                by_side["HOME"]["fair_market_prob"] + by_side["AWAY"]["fair_market_prob"],
+                1.0, rel_tol=0.0, abs_tol=0.01,
+            ):
+                continue
+            complete_pairs.append((observed_at, by_side))
+        if not complete_pairs:
+            continue
+        _, moneyline = max(complete_pairs, key=lambda pair: pair[0])
+        counts["finals_with_pregame_moneyline_pair"] += 1
+        season["finals_with_pregame_moneyline_pair"] += 1
+        if result["home_score"] == result["away_score"]:
+            continue
+
+        counts["usable_non_tie_rows"] += 1
+        season["usable_non_tie_rows"] += 1
+        home_feature, away_feature = features["HOME"], features["AWAY"]
+        eligible_rows.append({
+            "event_id": result["event_id"],
+            "season_year": result["season_year"],
+            "kickoff_utc": kickoff.isoformat(timespec="seconds"),
+            "away_team": result["away_team"],
+            "home_team": result["home_team"],
+            "away_score": result["away_score"],
+            "home_score": result["home_score"],
+            "home_win": int(result["home_score"] > result["away_score"]),
+            "feature_observed_at": max(
+                home_feature["observed_at"], away_feature["observed_at"],
+            ),
+            "feature_inputs_observed_through": max(
+                home_feature["inputs_observed_through"],
+                away_feature["inputs_observed_through"],
+            ),
+            "away_prior_games": away_feature["prior_games"],
+            "away_avg_points_for": away_feature["avg_points_for"],
+            "away_avg_points_against": away_feature["avg_points_against"],
+            "away_avg_point_diff": away_feature["avg_point_diff"],
+            "home_prior_games": home_feature["prior_games"],
+            "home_avg_points_for": home_feature["avg_points_for"],
+            "home_avg_points_against": home_feature["avg_points_against"],
+            "home_avg_point_diff": home_feature["avg_point_diff"],
+            "moneyline_observed_at": max(item["observed_at"] for item in moneyline.values()),
+            "away_odds": moneyline["AWAY"]["odds"],
+            "home_odds": moneyline["HOME"]["odds"],
+            "away_no_vig_probability": moneyline["AWAY"]["fair_market_prob"],
+            "home_no_vig_probability": moneyline["HOME"]["fair_market_prob"],
+        })
+
+    return {
+        "model_status": "NOT_VALIDATED",
+        "model_predictions_enabled": False,
+        "rows_are_prospective_and_time_eligible": True,
+        "counts": counts,
+        "by_season": by_season,
+        "eligible_rows": sorted(eligible_rows, key=lambda row: (row["kickoff_utc"], row["event_id"])),
+    }
+
+
 def get_real_player_stat(event_id: str, player_name: str, market_type: str) -> float:
     """Queries official ESPN box-score summary endpoint to settle props against real stats."""
     url = f"{ESPN_SUMMARY_BASE}?event={event_id}"
@@ -877,6 +1027,14 @@ class UpgradedRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(items).encode("utf-8"))
+            return
+
+        elif parsed.path == "/api/model/dataset":
+            dataset = build_prospective_model_dataset()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(dataset).encode("utf-8"))
             return
 
         elif parsed.path == "/api/history/result-changes":

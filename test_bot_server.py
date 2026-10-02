@@ -211,6 +211,90 @@ class SchedulePersistenceTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
+    def test_model_dataset_requires_features_market_and_outcome_before_and_after_kickoff(self):
+        events = [
+            ("eligible", "2026-10-10T17:00:00+00:00", "2026-10-11T01:00:00+00:00", 24, 20,
+             "2026-10-09T17:00:00+00:00", "2026-10-08T17:00:00+00:00"),
+            ("late-feature", "2026-10-10T17:00:00+00:00", "2026-10-11T01:00:00+00:00", 24, 20,
+             "2026-10-10T18:00:00+00:00", "2026-10-08T17:00:00+00:00"),
+            ("late-market", "2026-10-10T17:00:00+00:00", "2026-10-11T01:00:00+00:00", 24, 20,
+             "2026-10-09T17:00:00+00:00", "2026-10-10T18:00:00+00:00"),
+            ("tie", "2026-10-10T17:00:00+00:00", "2026-10-11T01:00:00+00:00", 20, 20,
+             "2026-10-09T17:00:00+00:00", "2026-10-08T17:00:00+00:00"),
+            ("early-result", "2026-10-10T17:00:00+00:00", "2026-10-10T16:00:00+00:00", 24, 20,
+             "2026-10-09T17:00:00+00:00", "2026-10-08T17:00:00+00:00"),
+        ]
+        with sqlite3.connect(bot_server.DB_FILE) as conn:
+            for event_id, kickoff, result_observed, away_score, home_score, feature_time, market_time in events:
+                conn.execute("""
+                    INSERT INTO game_results
+                    (event_id, season_year, kickoff_utc, away_team, home_team, away_score, home_score,
+                     source, observed_at)
+                    VALUES (?, 2026, ?, 'Away Team', 'Home Team', ?, ?, 'ESPN', ?)
+                """, (event_id, kickoff, away_score, home_score, result_observed))
+                for side, team in (("AWAY", "Away Team"), ("HOME", "Home Team")):
+                    conn.execute("""
+                        INSERT INTO team_game_features
+                        (event_id, team, opponent, side, season_year, kickoff_utc, prior_games,
+                         avg_points_for, avg_points_against, avg_point_diff, feature_name,
+                         source, observed_at, inputs_observed_through)
+                        VALUES (?, ?, ?, ?, 2026, ?, 2, 20, 17, 3, 'test', 'ESPN', ?, ?)
+                    """, (
+                        event_id, team, "Home Team" if side == "AWAY" else "Away Team",
+                        side, kickoff, feature_time, "2026-10-08T16:00:00+00:00",
+                    ))
+                for side, target, odds, fair_probability in (
+                    ("AWAY", "Away Team", -110, 0.5),
+                    ("HOME", "Home Team", -110, 0.5),
+                ):
+                    conn.execute("""
+                        INSERT INTO market_snapshots
+                        (event_id, market, side, target, odds, implied_prob, fair_market_prob,
+                         source, observed_at)
+                        VALUES (?, 'Moneyline', ?, ?, ?, 0.5238, ?, 'DraftKings', ?)
+                    """, (event_id, side, target, odds, fair_probability, market_time))
+                if event_id == "eligible":
+                    for side, target, odds, fair_probability in (
+                        ("AWAY", "Away Team", -115, 0.51),
+                        ("HOME", "Home Team", 105, 0.49),
+                    ):
+                        conn.execute("""
+                            INSERT INTO market_snapshots
+                            (event_id, market, side, target, odds, implied_prob, fair_market_prob,
+                             source, observed_at)
+                            VALUES (?, 'Moneyline', ?, ?, ?, 0.5238, ?, 'DraftKings', ?)
+                        """, (event_id, side, target, odds, fair_probability, market_time))
+
+        dataset = bot_server.build_prospective_model_dataset()
+
+        self.assertEqual(dataset["model_status"], "NOT_VALIDATED")
+        self.assertFalse(dataset["model_predictions_enabled"])
+        self.assertEqual(dataset["counts"]["finals_with_kickoff"], 4)
+        self.assertEqual(dataset["counts"]["finals_with_observed_pregame_features"], 3)
+        self.assertEqual(dataset["counts"]["finals_with_pregame_moneyline_pair"], 2)
+        self.assertEqual(dataset["counts"]["usable_non_tie_rows"], 1)
+        self.assertEqual([row["event_id"] for row in dataset["eligible_rows"]], ["eligible"])
+        self.assertEqual(dataset["eligible_rows"][0]["home_win"], 0)
+        self.assertEqual(dataset["eligible_rows"][0]["away_odds"], -115)
+        self.assertEqual(dataset["eligible_rows"][0]["home_odds"], 105)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), bot_server.UpgradedRequestHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            connection.request("GET", "/api/model/dataset")
+            response = connection.getresponse()
+            api_dataset = json.loads(response.read())
+            connection.close()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(api_dataset["counts"], dataset["counts"])
+            self.assertEqual(api_dataset["eligible_rows"][0]["event_id"], "eligible")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_push_and_void_return_stake(self):
         self.assertEqual(bot_server.compute_settlement_pnl(20, -110, "PUSH"), (20, 0.0))
         self.assertEqual(bot_server.compute_settlement_pnl(20, 105, "VOID"), (20, 0.0))
